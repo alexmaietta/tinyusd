@@ -1,0 +1,89 @@
+context:
+  version: "0.2.0"
+
+package:
+  name: libtinyusd
+  version: ${{ version }}
+
+source:
+  path: ../..
+
+build:
+  number: 0
+  script:
+    - if: unix
+      then:
+        - cmake -S . -B _build -G Ninja ${CMAKE_ARGS} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_INSTALL_LIBDIR=lib -DTINYUSD_BUILD_TESTS=OFF -DTINYUSD_BUILD_EXAMPLES=OFF -DTINYUSD_INSTALL=ON
+        - cmake --build _build --parallel ${CPU_COUNT}
+        - cmake --install _build
+      else:
+        - cmake -S . -B _build -G Ninja %CMAKE_ARGS% -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%LIBRARY_PREFIX% -DTINYUSD_BUILD_TESTS=OFF -DTINYUSD_BUILD_EXAMPLES=OFF -DTINYUSD_INSTALL=ON
+        - if errorlevel 1 exit 1
+        - cmake --build _build --parallel %CPU_COUNT%
+        - if errorlevel 1 exit 1
+        - cmake --install _build
+        - if errorlevel 1 exit 1
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - ${{ stdlib('c') }}
+    - ${{ compiler('cxx') }}
+    - ${{ compiler('rust') }}
+    - cmake
+    - ninja
+    - git
+
+tests:
+  - package_contents:
+      include:
+        - tinyusd/tinyusd.h
+        - tinyusd/tinyusd.hpp
+      lib:
+        - tinyusd
+      files:
+        - if: unix
+          then: lib/cmake/tinyusd/tinyusdConfig.cmake
+          else: Library/lib/cmake/tinyusd/tinyusdConfig.cmake
+  - files:
+      source:
+        - packaging/test/
+        - tests/cpp/
+        - tests/data/
+    requirements:
+      build:
+        - ${{ compiler('c') }}
+        - ${{ compiler('cxx') }}
+      run:
+        - cmake
+        - ninja
+    script:
+      - if: unix
+        then:
+          - cmake -S packaging/test -B _test -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PREFIX -DTINYUSD_TESTS_DIR=$PWD/tests
+          - cmake --build _test
+          - ctest --test-dir _test --output-on-failure
+        else:
+          - cmake -S packaging/test -B _test -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=%LIBRARY_PREFIX% -DTINYUSD_TESTS_DIR=%CD:\=/%/tests
+          - if errorlevel 1 exit 1
+          - cmake --build _test
+          - if errorlevel 1 exit 1
+          - ctest --test-dir _test --output-on-failure
+          - if errorlevel 1 exit 1
+
+about:
+  homepage: https://github.com/alexmaietta/tinyusd
+  repository: https://github.com/alexmaietta/tinyusd
+  license: BSD-3-Clause
+  license_file:
+    - LICENSE
+    - licenses/
+  summary: Small OpenUSD reader and writer with C, C++ and Python APIs
+  description: |
+    tinyusd reads, composes, queries and writes OpenUSD stages (.usda, .usdc and .usdz) without the
+    OpenUSD C++ stack. This package holds the shared library, the C and C++ headers and a CMake package
+    (find_package(tinyusd CONFIG REQUIRED), target tinyusd::tinyusd).
+
+extra:
+  recipe-maintainers:
+    - alexmaietta

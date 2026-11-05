@@ -1,0 +1,128 @@
+name: packages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packaging/**
+      - cmake/**
+      - CMakeLists.txt
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/packages.yml
+  pull_request:
+    paths:
+      - packaging/**
+      - cmake/**
+      - CMakeLists.txt
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/packages.yml
+  workflow_dispatch:
+
+jobs:
+  vcpkg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux-x86_64, kind: static, triplet: x64-linux }
+          - { os: ubuntu-latest, platform: linux-x86_64, kind: shared, triplet: x64-linux-dynamic }
+          - { os: macos-latest, platform: macos-aarch64, kind: static, triplet: arm64-osx }
+          - { os: macos-latest, platform: macos-aarch64, kind: shared, triplet: arm64-osx-dynamic }
+          - { os: windows-latest, platform: windows-x86_64, kind: shared, triplet: x64-windows }
+          - { os: windows-latest, platform: windows-x86_64, kind: static, triplet: x64-windows-static-md }
+    name: vcpkg (${{ matrix.triplet }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: packages-${{ matrix.kind }}
+      - name: Build the release archive
+        shell: bash
+        run: |
+          static=$([ "${{ matrix.kind }}" = static ] && echo ON || echo OFF)
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTINYUSD_STATIC=$static -DTINYUSD_BUILD_TESTS=OFF -DTINYUSD_BUILD_EXAMPLES=OFF -DTINYUSD_INSTALL=ON
+          cmake --build build --config Release --parallel
+          cmake --install build --config Release --prefix stage
+          version=$(sed -n 's/^project(tinyusd VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir archives
+          (cd stage && cmake -E tar czf "../archives/tinyusd-$version-${{ matrix.platform }}-${{ matrix.kind }}.tar.gz" .)
+      - name: Install with vcpkg
+        shell: bash
+        run: |
+          python3 packaging/update.py "$VERSION" --archives archives --allow-missing
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          if [ "$RUNNER_OS" = Windows ]; then "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics; else "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics; fi
+          mkdir -p "$RUNNER_TEMP/vcpkg/downloads"
+          cp archives/*.tar.gz "$RUNNER_TEMP/vcpkg/downloads/"
+          "$RUNNER_TEMP/vcpkg/vcpkg" install "tinyusd:${{ matrix.triplet }}" --classic --overlay-ports=packaging/vcpkg/ports --binarysource=clear
+      - name: Run the C and C++ test suites against the port
+        shell: bash
+        run: |
+          bin="$RUNNER_TEMP/vcpkg/installed/${{ matrix.triplet }}/bin"
+          if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -u "$bin"); fi
+          export PATH="$bin:$PATH"
+          for config in Debug Release; do
+            cmake -S packaging/test -B "test-$config" -DCMAKE_BUILD_TYPE=$config -DTINYUSD_TESTS_DIR="$PWD/tests" \
+              -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+            cmake --build "test-$config" --config $config
+            ctest --test-dir "test-$config" -C $config --output-on-failure
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: vcpkg-logs-${{ matrix.triplet }}
+          path: ${{ runner.temp }}/vcpkg/buildtrees/tinyusd/*.log
+          if-no-files-found: ignore
+
+  conan:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, args: '-o "tinyusd/*:shared=False"' }
+          - { os: ubuntu-latest, args: '-o "tinyusd/*:shared=True" -o "tinyusd/*:write=False"' }
+          - { os: macos-latest, args: '-o "tinyusd/*:shared=True"' }
+          - { os: windows-latest, args: '-o "tinyusd/*:shared=True"' }
+          - { os: windows-latest, args: '-o "tinyusd/*:shared=False" -s compiler.runtime=static' }
+    name: conan (${{ matrix.os }}, ${{ matrix.args }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install conan
+      - run: conan profile detect
+      - run: conan create packaging/conan ${{ matrix.args }}
+
+  conda:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, asset: rattler-build-x86_64-unknown-linux-musl }
+          - { os: macos-latest, asset: rattler-build-aarch64-apple-darwin }
+          - { os: windows-latest, asset: rattler-build-x86_64-pc-windows-msvc.exe }
+    name: conda (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rattler-build
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          exe=$([ "$RUNNER_OS" = Windows ] && echo rattler-build.exe || echo rattler-build)
+          curl -fsSL -o "$RUNNER_TEMP/bin/$exe" "https://github.com/prefix-dev/rattler-build/releases/latest/download/${{ matrix.asset }}"
+          chmod +x "$RUNNER_TEMP/bin/$exe"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build and test with conda-forge's pinning
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/conda_build_config.yaml" https://raw.githubusercontent.com/conda-forge/conda-forge-pinning-feedstock/main/recipe/conda_build_config.yaml
+          rattler-build build --recipe packaging/conda/recipe.yaml -c conda-forge -m "$RUNNER_TEMP/conda_build_config.yaml" --output-dir "$RUNNER_TEMP/conda-out"

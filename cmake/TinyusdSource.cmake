@@ -3,7 +3,9 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 include(TinyusdPlatform)
 
-FetchContent_Declare(Corrosion GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git GIT_TAG v0.6.1 GIT_SHALLOW TRUE)
+# A Corrosion provided by a package manager (vcpkg, Conan, conda) is used when one is found.
+FetchContent_Declare(Corrosion GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git GIT_TAG v0.6.1 GIT_SHALLOW TRUE
+  FIND_PACKAGE_ARGS 0.6 CONFIG)
 FetchContent_MakeAvailable(Corrosion)
 
 if(TINYUSD_STATIC)
@@ -22,6 +24,11 @@ corrosion_import_crate(
   NO_DEFAULT_FEATURES
   FEATURES ${TINYUSD_FEATURES}
 )
+
+# Rust links the dynamic CRT on MSVC by default. Match a static CRT when the build asks for one.
+if(MSVC AND DEFINED CMAKE_MSVC_RUNTIME_LIBRARY AND NOT CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "DLL")
+  corrosion_add_target_rustflags(tinyusd -Ctarget-feature=+crt-static)
+endif()
 
 target_include_directories(tinyusd INTERFACE
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>

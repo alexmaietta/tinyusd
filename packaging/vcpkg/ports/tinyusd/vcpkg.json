@@ -1,0 +1,14 @@
+{
+  "name": "tinyusd",
+  "version": "0.2.0",
+  "description": "Small OpenUSD reader and writer with C, C++ and Python APIs, for importers that don't want the full OpenUSD stack.",
+  "homepage": "https://github.com/alexmaietta/tinyusd",
+  "license": "BSD-3-Clause",
+  "supports": "(windows | osx | linux) & (x64 | arm64) & !uwp & !(windows & staticcrt)",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

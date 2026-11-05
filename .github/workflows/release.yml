@@ -54,6 +54,25 @@ jobs:
             tinyusd-*.tar.gz
             tinyusd-*.tar.gz.sha256
 
+  # The vcpkg port with this release's hashes, ready to submit to microsoft/vcpkg.
+  vcpkg-port:
+    needs: archives
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - run: |
+          version="${TAG#v}"
+          python3 packaging/update.py "$version"
+          tar czf "tinyusd-$version-vcpkg-port.tar.gz" -C packaging/vcpkg/ports tinyusd
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: tinyusd-*-vcpkg-port.tar.gz
+
   wheels:
     if: github.event_name == 'push'
     strategy:
