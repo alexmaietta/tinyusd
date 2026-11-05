@@ -99,7 +99,7 @@ def test_array_values(stage):
 def test_assets(stage):
     p = stage.prim("/World/Types")
     a = p.get("a")
-    assert a.authored == "./part.usda" and a.resolved.endswith("tests/data/part.usda")
+    assert a.authored == "./part.usda" and Path(a.resolved).resolve() == (DATA / "part.usda").resolve()
     aa = p.get("aa")
     assert [x.authored for x in aa] == ["./part.usda", "missing.png"]
     assert aa[1].resolved == ""

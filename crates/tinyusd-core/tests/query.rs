@@ -229,11 +229,8 @@ fn assets_resolve_relative_to_their_layer() {
             (a.base_type(), a.strings()),
             (BaseType::Asset, &["./part.usda".to_owned()][..])
         );
-        assert!(
-            a.resolved_paths()[0].ends_with("tests/data/part.usda"),
-            "{:?}",
-            a.resolved_paths()
-        );
+        let expected = std::fs::canonicalize(data("part.usda")).unwrap();
+        assert_eq!(std::fs::canonicalize(&a.resolved_paths()[0]).unwrap(), expected);
         let aa = get(&stage, p, "aa");
         assert_eq!(aa.strings(), ["./part.usda", "missing.png"]);
         assert!(aa.resolved_paths()[0].ends_with("part.usda"));
