@@ -14,7 +14,7 @@ tinyusd opens `.usda`, `.usdc` and `.usdz` files, composes them the same way Ope
 
 ## At a glance
 
-| | |
+| Property | Value |
 |---|---|
 | Library size | about 5.0 MB shared library, 2.3 MB gzipped (Linux x86_64, every feature). 4.5 MB without the write API |
 | Runtime dependencies | libc only. No TBB, Boost, Python or OpenUSD |
