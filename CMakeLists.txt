@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(tinyusd VERSION 0.1.0 LANGUAGES C CXX)
+project(tinyusd VERSION 0.2.0 LANGUAGES C CXX)
 
 option(TINYUSD_USE_PREBUILT "Download a prebuilt tinyusd release instead of building with cargo" OFF)
 option(TINYUSD_STATIC "Link tinyusd as a static library" OFF)

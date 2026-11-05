@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "tinyusd-capi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cbindgen",
  "serde_json",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "tinyusd-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "half",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "tinyusd-py"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "half",

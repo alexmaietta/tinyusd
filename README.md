@@ -10,7 +10,7 @@ A small, dependency-free OpenUSD reader and writer for C, C++ and Python, writte
 
 tinyusd opens `.usda`, `.usdc` and `.usdz` files, composes them the same way OpenUSD does (sublayers, references, payloads, variants, inherits, specializes, instancing), and lets you query the resulting prims, attributes, relationships, connections, metadata and assets. It does not invent its own scene format. Your importer reads USD data directly and builds whatever structures your engine or simulator needs.
 
-> **Status:** 0.1.0, early. The query API, the resolution helpers (transforms, primvars, materials, point instancers, skeletons and skinning), host file systems and payload loading are complete and checked against OpenUSD on our fixtures and on Pixar's Kitchen Set. The [write API](#writing) is new. Files it writes are checked against OpenUSD too. See [Roadmap](#roadmap).
+> **Status:** 0.2.0, early. The query API, the resolution helpers (transforms, primvars, materials, point instancers, skeletons and skinning), host file systems and payload loading are complete and checked against OpenUSD on our fixtures and on Pixar's Kitchen Set. The [write API](#writing) is new. Files it writes are checked against OpenUSD too. See [Roadmap](#roadmap).
 
 ## At a glance
 
@@ -427,12 +427,12 @@ Open with `load_payloads` off to compose a stage without its payloads, then load
 ```cmake
 include(FetchContent)
 set(TINYUSD_USE_PREBUILT ON)
-FetchContent_Declare(tinyusd GIT_REPOSITORY https://github.com/alexmaietta/tinyusd.git GIT_TAG v0.1.0)
+FetchContent_Declare(tinyusd GIT_REPOSITORY https://github.com/alexmaietta/tinyusd.git GIT_TAG v0.2.0)
 FetchContent_MakeAvailable(tinyusd)
 target_link_libraries(my_app PRIVATE tinyusd::tinyusd)
 ```
 
-To build from source with cargo, leave `TINYUSD_USE_PREBUILT` off (the default). CMake fetches [Corrosion](https://github.com/corrosion-rs/corrosion) and drives cargo for you. An installed copy works with `find_package(tinyusd 0.1 CONFIG REQUIRED)`.
+To build from source with cargo, leave `TINYUSD_USE_PREBUILT` off (the default). CMake fetches [Corrosion](https://github.com/corrosion-rs/corrosion) and drives cargo for you. An installed copy works with `find_package(tinyusd 0.2 CONFIG REQUIRED)`.
 
 | Option | Default | Meaning |
 |---|---|---|
