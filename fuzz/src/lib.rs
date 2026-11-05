@@ -33,6 +33,7 @@ pub fn exercise(extension: &str, data: &[u8]) {
         &OpenOptions {
             load_payloads: true,
             resolver: Some(resolver),
+            ..OpenOptions::default()
         },
     ) else {
         return;

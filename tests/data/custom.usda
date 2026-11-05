@@ -1,0 +1,21 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+)
+
+def Xform "World"
+{
+    def DemoWidget "Widget" (
+        prepend apiSchemas = ["DemoTagAPI", "DemoSlotAPI:left"]
+    )
+    {
+        float demo:size = 4
+        float slot:left:weight = 0.5
+    }
+
+    def DemoWidget "Defaults" (
+        prepend apiSchemas = ["DemoSlotAPI:right"]
+    )
+    {
+    }
+}

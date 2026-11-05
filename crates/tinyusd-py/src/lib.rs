@@ -13,6 +13,7 @@ create_exception!(_tinyusd, InvalidPathError, Error);
 create_exception!(_tinyusd, AssetError, Error);
 create_exception!(_tinyusd, UnsupportedTypeError, Error);
 create_exception!(_tinyusd, FeatureDisabledError, Error);
+create_exception!(_tinyusd, SchemaError, Error);
 
 fn py_err(e: core::Error) -> PyErr {
     match e {
@@ -20,6 +21,7 @@ fn py_err(e: core::Error) -> PyErr {
         core::Error::InvalidPath(_) => InvalidPathError::new_err(e.to_string()),
         core::Error::Asset { .. } => AssetError::new_err(e.to_string()),
         core::Error::FeatureDisabled(_) => FeatureDisabledError::new_err(e.to_string()),
+        core::Error::Schema { .. } => SchemaError::new_err(e.to_string()),
         core::Error::InvalidPrim | core::Error::Usd(_) => Error::new_err(e.to_string()),
     }
 }
@@ -393,14 +395,15 @@ fn wrap(stage: &Bound<'_, Stage>, prims: Vec<core::Prim>) -> Vec<Prim> {
 #[pymethods]
 impl Stage {
     #[staticmethod]
-    #[pyo3(signature = (path, *, load_payloads = true, resolver = None))]
-    fn open(path: PathBuf, load_payloads: bool, resolver: Option<Py<PyAny>>) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, load_payloads = true, resolver = None, schemas = Vec::new()))]
+    fn open(path: PathBuf, load_payloads: bool, resolver: Option<Py<PyAny>>, schemas: Vec<PathBuf>) -> PyResult<Self> {
         let path = path.to_string_lossy().into_owned();
         let resolver =
             resolver.map(|object| std::rc::Rc::new(PyResolver { object }) as std::rc::Rc<dyn core::AssetResolver>);
         let options = core::OpenOptions {
             load_payloads,
             resolver,
+            schema_paths: schemas,
         };
         let inner = core::Stage::open(&path, &options).map_err(py_err)?;
         Ok(Self { inner })
@@ -960,6 +963,7 @@ fn _tinyusd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("AssetError", py.get_type::<AssetError>())?;
     m.add("UnsupportedTypeError", py.get_type::<UnsupportedTypeError>())?;
     m.add("FeatureDisabledError", py.get_type::<FeatureDisabledError>())?;
+    m.add("SchemaError", py.get_type::<SchemaError>())?;
     m.add_class::<Stage>()?;
     m.add_class::<Prim>()?;
     m.add_class::<AssetPath>()?;

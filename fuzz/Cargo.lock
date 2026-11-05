@@ -595,6 +595,7 @@ dependencies = [
  "bytemuck",
  "openusd",
  "openusd-schemas",
+ "serde_json",
  "thiserror",
 ]
 

@@ -212,6 +212,24 @@ int main(int argc, char** argv) {
         CHECK(!skel_stage.prim("/Character/Skel")->skin_binding());
     }
 
+    {
+        tinyusd::OpenOptions with_schema;
+        with_schema.schema_paths.push_back(data + "/schemas/demo");
+        auto custom = tinyusd::Stage::open(data + "/custom.usda", with_schema);
+        CHECK(custom.prim("/World/Widget")->is_a("Xformable"));
+        CHECK(custom.prim("/World/Defaults")->get<float>("demo:size") == 2.5f);
+        CHECK(!tinyusd::Stage::open(data + "/custom.usda").prim("/World/Defaults")->get<float>("demo:size"));
+        tinyusd::OpenOptions missing;
+        missing.schema_paths.push_back(data + "/schemas/nope");
+        bool threw = false;
+        try {
+            tinyusd::Stage::open(data + "/custom.usda", missing);
+        } catch (const tinyusd::Error& e) {
+            threw = e.status() == tinyusd::Status::SchemaFailed;
+        }
+        CHECK(threw);
+    }
+
     auto unloaded = tinyusd::Stage::open(data + "/query.usda", {false});
     auto payloaded = *unloaded.prim("/World/Payloaded");
     CHECK(!payloaded.flags().has(tinyusd::PrimFlag::Loaded));

@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TUSD_ABI_VERSION 5
+#define TUSD_ABI_VERSION 6
 
 typedef enum TusdStatus {
   TUSD_STATUS_OK = 0,
@@ -17,6 +17,7 @@ typedef enum TusdStatus {
   TUSD_STATUS_USD_ERROR = 6,
   TUSD_STATUS_PANIC = 7,
   TUSD_STATUS_FEATURE_DISABLED = 8,
+  TUSD_STATUS_SCHEMA_FAILED = 9,
 } TusdStatus;
 
 typedef enum TusdSpecifier {
@@ -143,6 +144,8 @@ typedef struct TusdOpenOptions {
   uint32_t struct_size;
   bool load_payloads;
   const struct TusdResolverCallbacks *resolver;
+  const char *const *schema_paths;
+  size_t schema_path_count;
 } TusdOpenOptions;
 
 typedef uint32_t TusdPrim;

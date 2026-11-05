@@ -233,6 +233,22 @@ stage = tinyusd.Stage.open("pak://levels/warehouse.usd", resolver=PakResolver())
 
 In C, fill a `TusdResolverCallbacks` with `resolve`, `read` and an optional `release`, and point `TusdOpenOptions.resolver` at it. Callbacks hand results back with `tusd_output_set_string`, `tusd_output_set_bytes` and `tusd_output_set_error`. tinyusd copies the struct during `tusd_stage_open` and calls `release(user_data)` exactly once: when the stage is freed, or straight away if opening fails. Callbacks run on the thread that is using the stage and must not call back into that stage. A C++ resolver that throws is treated as a failure, and the exception message becomes the error.
 
+## Custom schemas
+
+tinyusd knows the standard schema families (UsdGeom, UsdShade, UsdLux, UsdSkel, UsdPhysics, UsdVol, UsdMedia, UsdSemantics and the rest). For your own codeless schemas, pass the folder that holds their `plugInfo.json` and `generatedSchema.usda`, the two files `usdGenSchema` writes, when you open the stage. Upstream's `@PLUG_INFO_ROOT@`-style placeholders may be left in `plugInfo.json`.
+
+```cpp
+tinyusd::OpenOptions options;
+options.schema_paths.push_back("/path/to/chrono.schema/resources");
+auto stage = tinyusd::Stage::open("robot.usd", options);
+```
+
+```python
+stage = tinyusd.Stage.open("robot.usd", schemas=["/path/to/chrono.schema/resources"])
+```
+
+With a schema registered, `is_a` follows its bases (a typed schema derived from `Xformable` is an `Xformable`), `has_api` knows its API schemas, `get` returns its fallback values where nothing is authored, and `attribute_names` lists its properties. `attribute_info(...).has_authored_value` still tells authored values from fallbacks. Without it, the prims still load and authored values read normally, but the type is unknown to `is_a` and there are no fallbacks. In C, set `schema_paths` and `schema_path_count` in `TusdOpenOptions`; a schema that can't be read fails the open with `TUSD_STATUS_SCHEMA_FAILED`.
+
 ## Payloads
 
 Open with `load_payloads` off to compose a stage without its payloads, then load just what you need. `loadable(root)` lists the prims that have payloads, and `load(prim, with_descendants)` and `unload(prim)` change what's loaded. Prim handles stay valid across loads and unloads, and the helpers' caches are reset automatically.

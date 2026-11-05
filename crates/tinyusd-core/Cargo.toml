@@ -20,6 +20,7 @@ openusd.workspace = true
 openusd-schemas = { workspace = true, features = ["geom"] }
 thiserror.workspace = true
 bytemuck = "1"
+serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"

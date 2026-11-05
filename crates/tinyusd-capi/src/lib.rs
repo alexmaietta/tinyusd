@@ -8,7 +8,7 @@ use std::ptr;
 
 use tinyusd_core as core;
 
-pub const TUSD_ABI_VERSION: u32 = 5;
+pub const TUSD_ABI_VERSION: u32 = 6;
 
 pub type TusdPrim = u32;
 
@@ -24,6 +24,7 @@ pub enum TusdStatus {
     UsdError = 6,
     Panic = 7,
     FeatureDisabled = 8,
+    SchemaFailed = 9,
 }
 
 #[repr(C)]
@@ -247,6 +248,8 @@ pub struct TusdOpenOptions {
     pub struct_size: u32,
     pub load_payloads: bool,
     pub resolver: *const TusdResolverCallbacks,
+    pub schema_paths: *const *const c_char,
+    pub schema_path_count: usize,
 }
 
 #[repr(C)]
@@ -366,6 +369,7 @@ fn status_of(error: &core::Error) -> TusdStatus {
         core::Error::Asset { .. } => TusdStatus::AssetFailed,
         core::Error::Usd(_) => TusdStatus::UsdError,
         core::Error::FeatureDisabled(_) => TusdStatus::FeatureDisabled,
+        core::Error::Schema { .. } => TusdStatus::SchemaFailed,
     }
 }
 
@@ -481,6 +485,8 @@ pub unsafe extern "C" fn tusd_open_options_init(options: *mut TusdOpenOptions) {
             struct_size: size_of::<TusdOpenOptions>() as u32,
             load_payloads: true,
             resolver: ptr::null(),
+            schema_paths: ptr::null(),
+            schema_path_count: 0,
         };
     }
 }
@@ -502,7 +508,8 @@ pub unsafe extern "C" fn tusd_stage_open(
                 return Err(invalid("options.struct_size is too small; call tusd_open_options_init"));
             }
             opts.load_payloads = o.load_payloads;
-            if size >= size_of::<TusdOpenOptions>()
+            let fits = |end: usize| size >= end;
+            if fits(std::mem::offset_of!(TusdOpenOptions, schema_paths))
                 && let Some(callbacks) = unsafe { o.resolver.as_ref() }
             {
                 let resolver = CallbackResolver { callbacks: *callbacks };
@@ -513,6 +520,16 @@ pub unsafe extern "C" fn tusd_stage_open(
                     return Err(invalid("resolver.resolve and resolver.read must be set"));
                 }
                 opts.resolver = Some(std::rc::Rc::new(resolver));
+            }
+            if fits(size_of::<TusdOpenOptions>()) && o.schema_path_count > 0 {
+                if o.schema_paths.is_null() {
+                    return Err(invalid("schema_paths must not be null when schema_path_count is set"));
+                }
+                let paths = unsafe { std::slice::from_raw_parts(o.schema_paths, o.schema_path_count) };
+                for &p in paths {
+                    opts.schema_paths
+                        .push(std::path::PathBuf::from(unsafe { str_arg(p, "schema path") }?));
+                }
             }
         }
         let stage = core::Stage::open(path, &opts)?;

@@ -1,5 +1,6 @@
 mod helpers;
 mod host;
+mod schemas;
 mod stage;
 mod value;
 
@@ -23,6 +24,8 @@ pub enum Error {
     Asset { path: String, message: String },
     #[error("{0}")]
     Usd(String),
+    #[error("failed to load schema '{path}': {message}")]
+    Schema { path: String, message: String },
     #[error("tinyusd was built without the '{0}' feature")]
     FeatureDisabled(&'static str),
 }

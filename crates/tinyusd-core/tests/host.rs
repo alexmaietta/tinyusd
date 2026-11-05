@@ -54,6 +54,7 @@ fn open(path: &str, resolver: Rc<MemoryResolver>, load_payloads: bool) -> Stage 
         &OpenOptions {
             load_payloads,
             resolver: Some(resolver),
+            ..OpenOptions::default()
         },
     )
     .unwrap()
@@ -110,6 +111,7 @@ fn missing_root_layer_fails_to_open() {
         &OpenOptions {
             load_payloads: true,
             resolver: Some(host),
+            ..OpenOptions::default()
         },
     );
     assert!(matches!(result, Err(Error::Open { .. })));
@@ -123,6 +125,7 @@ fn payloads_load_and_unload_after_open() {
         &OpenOptions {
             load_payloads: false,
             resolver: None,
+            ..OpenOptions::default()
         },
     )
     .unwrap();

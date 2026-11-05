@@ -45,6 +45,7 @@ enum class Status : int {
     UsdError = TUSD_STATUS_USD_ERROR,
     Panic = TUSD_STATUS_PANIC,
     FeatureDisabled = TUSD_STATUS_FEATURE_DISABLED,
+    SchemaFailed = TUSD_STATUS_SCHEMA_FAILED,
 };
 
 enum class Feature : std::uint32_t {
@@ -301,6 +302,7 @@ public:
 struct OpenOptions {
     bool load_payloads = true;
     std::shared_ptr<Resolver> resolver;
+    std::vector<std::string> schema_paths;
 };
 
 namespace detail {
@@ -780,6 +782,10 @@ public:
             callbacks.release = &detail::release_trampoline;
             raw.resolver = &callbacks;
         }
+        std::vector<const char*> schema_paths;
+        for (const auto& p : options.schema_paths) schema_paths.push_back(p.c_str());
+        raw.schema_paths = schema_paths.data();
+        raw.schema_path_count = schema_paths.size();
         TusdStage* stage = nullptr;
         detail::check(tusd_stage_open(path.c_str(), &raw, &stage));
         return Stage(stage);

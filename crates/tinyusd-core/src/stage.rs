@@ -125,6 +125,7 @@ pub struct AttributeInfo {
 pub struct OpenOptions {
     pub load_payloads: bool,
     pub resolver: Option<Rc<dyn AssetResolver>>,
+    pub schema_paths: Vec<std::path::PathBuf>,
 }
 
 impl Default for OpenOptions {
@@ -132,6 +133,7 @@ impl Default for OpenOptions {
         Self {
             load_payloads: true,
             resolver: None,
+            schema_paths: Vec::new(),
         }
     }
 }
@@ -141,6 +143,7 @@ impl std::fmt::Debug for OpenOptions {
         f.debug_struct("OpenOptions")
             .field("load_payloads", &self.load_payloads)
             .field("resolver", &self.resolver.is_some())
+            .field("schema_paths", &self.schema_paths)
             .finish()
     }
 }
@@ -160,9 +163,8 @@ impl Stage {
         } else {
             usd::InitialLoadSet::LoadNone
         };
-        let builder = usd::Stage::builder()
-            .schema_registry(openusd_schemas::schema_registry())
-            .load(load);
+        let registry = crate::schemas::registry(&options.schema_paths)?;
+        let builder = usd::Stage::builder().schema_registry(registry).load(load);
         let (builder, resolver): (_, Box<dyn ar::Resolver>) = match &options.resolver {
             Some(host) => {
                 let packages = PackageCache::default();
