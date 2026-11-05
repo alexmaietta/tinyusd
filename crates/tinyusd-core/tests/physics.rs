@@ -1,15 +1,12 @@
 #![cfg(feature = "physics")]
 
-use std::f64::consts::PI;
-
-use tinyusd_core::{Axis, Dof, JointKind, OpenOptions, Physics, PhysicsOptions, ShapeKind, Stage};
+use tinyusd_core::{Axis, Dof, JointKind, MassInformation, OpenOptions, Physics, PhysicsOptions, ShapeKind, Stage};
 
 fn load(si_units: bool) -> (Stage, Physics) {
     let path = format!("{}/../../tests/data/physics_full.usda", env!("CARGO_MANIFEST_DIR"));
     let mut stage = Stage::open(&path, &OpenOptions::default()).unwrap();
     let physics = stage
         .physics(&PhysicsOptions {
-            compute_mass: true,
             si_units,
             ..PhysicsOptions::default()
         })
@@ -114,31 +111,28 @@ fn joints_map_to_limits_and_drives() {
 }
 
 #[test]
-fn shape_masses_match_closed_forms() {
-    let (stage, p) = load(false);
-    let mass = |path: &str| body(&stage, &p, path).mass.unwrap();
-
-    let free = mass("/World/Props/Free");
-    let v = 4.0 / 3.0 * PI * 8.0;
-    assert!(close(free.mass, v, 1e-9));
-    assert!(close(free.diagonal_inertia[0], 0.4 * v * 4.0, 1e-9));
-
-    let can = mass("/World/Props/Can");
-    let v = PI * 9.0 * 12.0;
-    assert!(close(can.mass, v * 0.002, 1e-6), "{can:?}");
-    assert!(close(can.diagonal_inertia[1], v * 0.002 * 9.0 / 2.0, 1e-6));
-
-    let cone = mass("/World/Props/Cone");
-    let v = PI * 16.0 * 10.0 / 3.0;
-    assert!(close(cone.mass, v, 1e-6));
-    assert!(close(cone.center_of_mass[1], -2.5, 1e-6));
-
-    let crate_mass = mass("/World/Props/Crate");
-    assert!(close(crate_mass.mass, 2000.0, 1e-9));
-    assert!(close(crate_mass.diagonal_inertia[0], 2000.0 * 200.0 / 12.0, 1e-9));
-    assert!(close(crate_mass.diagonal_inertia[1], 2000.0 * 500.0 / 12.0, 1e-9));
-
-    let base = mass("/World/Robot/Base");
+fn mass_properties_apply_usd_precedence() {
+    let (mut stage, p) = load(false);
+    let poses: std::collections::HashMap<_, _> =
+        p.shapes.iter().map(|s| (s.prim, (s.local_pos, s.local_rot))).collect();
+    let mut mass_of = |path: &str| {
+        let body = stage.prim_at_path(path).unwrap().unwrap();
+        stage
+            .mass_properties(body, |collider| {
+                poses.get(&collider).map(|(pos, rot)| MassInformation {
+                    volume: 10.0,
+                    inertia: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    center_of_mass: [0.0; 3],
+                    local_pos: pos.map(f64::from),
+                    local_rot: rot.map(f64::from),
+                })
+            })
+            .unwrap()
+    };
+    assert!(close(mass_of("/World/Props/Free").mass, 10.0, 1e-9));
+    assert!(close(mass_of("/World/Props/Can").mass, 10.0 * 0.002, 1e-6));
+    assert!(close(mass_of("/World/Robot/Link").mass, 2.0 * 10.0 * 0.001, 1e-6));
+    let base = mass_of("/World/Robot/Base");
     assert_eq!(
         (base.mass, base.diagonal_inertia, base.center_of_mass),
         (5000.0, [10.0, 20.0, 30.0], [0.0, 5.0, 0.0])
@@ -150,13 +144,6 @@ fn si_conversion_scales_each_quantity() {
     let (stage, p) = load(true);
     assert!(p.si_units);
     assert!(close(f64::from(p.scenes[0].gravity_magnitude), 9.81, 1e-6));
-    let crate_mass = body(&stage, &p, "/World/Props/Crate").mass.unwrap();
-    assert!(close(crate_mass.mass, 2.0, 1e-9));
-    assert!(close(
-        crate_mass.diagonal_inertia[0],
-        2000.0 * 200.0 / 12.0 * 1e-7,
-        1e-9
-    ));
     let link = body(&stage, &p, "/World/Robot/Link");
     assert!(close(f64::from(link.position[1]), 1.5, 1e-6));
     assert!(close(f64::from(link.linear_velocity[2]), 0.5, 1e-6));
@@ -189,5 +176,4 @@ fn include_and_exclude_limit_the_range() {
         .unwrap();
     let bodies: Vec<&str> = p.rigid_bodies.iter().map(|b| stage.path(b.prim).unwrap()).collect();
     assert_eq!(bodies, ["/World/Props/Can", "/World/Props/Cone", "/World/Props/Free"]);
-    assert!(p.rigid_bodies.iter().all(|b| b.mass.is_none()));
 }

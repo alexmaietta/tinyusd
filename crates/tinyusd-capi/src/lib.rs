@@ -8,7 +8,7 @@ use std::ptr;
 
 use tinyusd_core as core;
 
-pub const TUSD_ABI_VERSION: u32 = 7;
+pub const TUSD_ABI_VERSION: u32 = 8;
 
 pub type TusdPrim = u32;
 
@@ -1871,7 +1871,6 @@ pub struct TusdPhysicsOptions {
     pub include_count: usize,
     pub exclude: *const TusdPrim,
     pub exclude_count: usize,
-    pub compute_mass: bool,
     pub si_units: bool,
 }
 
@@ -1955,11 +1954,6 @@ pub struct TusdRigidBodyView {
     pub starts_asleep: bool,
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
-    pub has_mass: bool,
-    pub mass: f64,
-    pub diagonal_inertia: [f64; 3],
-    pub center_of_mass: [f64; 3],
-    pub principal_axes: [f64; 4],
 }
 
 #[repr(C)]
@@ -2133,7 +2127,6 @@ pub unsafe extern "C" fn tusd_physics_options_init(options: *mut TusdPhysicsOpti
             include_count: 0,
             exclude: ptr::null(),
             exclude_count: 0,
-            compute_mass: true,
             si_units: false,
         };
     }
@@ -2158,10 +2151,7 @@ pub unsafe extern "C" fn tusd_stage_physics(
     guard(|| {
         let out = unsafe { out_mut(out, "out") }?;
         let s = unsafe { stage_mut(stage) }?;
-        let mut opts = core::PhysicsOptions {
-            compute_mass: true,
-            ..core::PhysicsOptions::default()
-        };
+        let mut opts = core::PhysicsOptions::default();
         if let Some(o) = unsafe { options.as_ref() } {
             if (o.struct_size as usize) < size_of::<TusdPhysicsOptions>() {
                 return Err(invalid(
@@ -2176,7 +2166,6 @@ pub unsafe extern "C" fn tusd_stage_physics(
                 .iter()
                 .map(|&p| prim(p))
                 .collect();
-            opts.compute_mass = o.compute_mass;
             opts.si_units = o.si_units;
         }
         out.physics = s.stage.physics(&opts)?;
@@ -2358,7 +2347,6 @@ pub unsafe extern "C" fn tusd_physics_rigid_body(
     guard(|| {
         let out = unsafe { out_mut(out, "out") }?;
         let (_, b) = physics_item(physics, index, |p| &p.rigid_bodies)?;
-        let mass = b.mass.unwrap_or_default();
         *out = TusdRigidBodyView {
             prim: handle(b.prim),
             collisions: prims_ptr(&b.collisions),
@@ -2375,11 +2363,6 @@ pub unsafe extern "C" fn tusd_physics_rigid_body(
             starts_asleep: b.starts_asleep,
             linear_velocity: b.linear_velocity,
             angular_velocity: b.angular_velocity,
-            has_mass: b.mass.is_some(),
-            mass: mass.mass,
-            diagonal_inertia: mass.diagonal_inertia,
-            center_of_mass: mass.center_of_mass,
-            principal_axes: mass.principal_axes,
         };
         Ok(())
     })
@@ -2461,4 +2444,80 @@ pub unsafe extern "C" fn tusd_physics_diagnostic(physics: *const TusdPhysics, in
     unsafe { physics.as_ref() }
         .and_then(|p| p.diagnostics.get(index).map(|&i| p.string(i)))
         .unwrap_or(ptr::null())
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdMassInformation {
+    pub volume: f64,
+    pub inertia: [f64; 9],
+    pub center_of_mass: [f64; 3],
+    pub local_pos: [f64; 3],
+    pub local_rot: [f64; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdBodyMass {
+    pub mass: f64,
+    pub diagonal_inertia: [f64; 3],
+    pub center_of_mass: [f64; 3],
+    pub principal_axes: [f64; 4],
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_mass_colliders(
+    stage: *mut TusdStage,
+    body: TusdPrim,
+    out: *mut TusdPrimList,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        out.prims = s.stage.mass_colliders(prim(body))?.into_iter().map(handle).collect();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_mass_properties(
+    stage: *mut TusdStage,
+    body: TusdPrim,
+    colliders: *const TusdPrim,
+    infos: *const TusdMassInformation,
+    count: usize,
+    out: *mut TusdBodyMass,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let colliders = unsafe { prim_slice(colliders, count, "colliders") }?;
+        if count > 0 && infos.is_null() {
+            return Err(invalid("infos must not be null when count is set"));
+        }
+        let infos = if count == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(infos, count) }
+        };
+        let table: HashMap<TusdPrim, TusdMassInformation> =
+            colliders.iter().copied().zip(infos.iter().copied()).collect();
+        let s = unsafe { stage_mut(stage) }?;
+        let m = s.stage.mass_properties(prim(body), |collider| {
+            let info = table.get(&handle(collider))?;
+            (info.volume >= 0.0).then_some(core::MassInformation {
+                volume: info.volume,
+                inertia: info.inertia,
+                center_of_mass: info.center_of_mass,
+                local_pos: info.local_pos,
+                local_rot: info.local_rot,
+            })
+        })?;
+        *out = TusdBodyMass {
+            mass: m.mass,
+            diagonal_inertia: m.diagonal_inertia,
+            center_of_mass: m.center_of_mass,
+            principal_axes: m.principal_axes,
+        };
+        Ok(())
+    })
 }

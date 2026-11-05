@@ -482,12 +482,11 @@ impl Stage {
             .collect()
     }
 
-    #[pyo3(signature = (*, include = None, exclude = None, compute_mass = true, si_units = false))]
+    #[pyo3(signature = (*, include = None, exclude = None, si_units = false))]
     fn physics<'py>(
         slf: &Bound<'py, Self>,
         include: Option<Vec<PyRef<'py, Prim>>>,
         exclude: Option<Vec<PyRef<'py, Prim>>>,
-        compute_mass: bool,
         si_units: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let py = slf.py();
@@ -497,11 +496,80 @@ impl Stage {
         let options = core::PhysicsOptions {
             include: own_all(include)?,
             exclude: own_all(exclude)?,
-            compute_mass,
             si_units,
         };
         let phys = slf.borrow_mut().inner.physics(&options).map_err(py_err)?;
         physics_dict(py, slf, &phys)
+    }
+
+    fn mass_colliders(slf: &Bound<'_, Self>, body: PyRef<'_, Prim>) -> PyResult<Vec<Prim>> {
+        let handle = own(slf, &body)?;
+        let colliders = slf.borrow_mut().inner.mass_colliders(handle).map_err(py_err)?;
+        Ok(wrap(slf, colliders))
+    }
+
+    fn mass_properties<'py>(
+        slf: &Bound<'py, Self>,
+        body: PyRef<'py, Prim>,
+        mass_info: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let py = slf.py();
+        let handle = own(slf, &body)?;
+        let colliders = slf.borrow_mut().inner.mass_colliders(handle).map_err(py_err)?;
+        let defaults = core::MassInformation::default();
+        let mut table = std::collections::HashMap::new();
+        for collider in colliders {
+            let prim = Py::new(
+                py,
+                Prim {
+                    stage: slf.clone().unbind(),
+                    handle: collider,
+                },
+            )?;
+            let out = mass_info.call1((prim,))?;
+            if out.is_none() {
+                continue;
+            }
+            let raw = out.get_item("inertia")?;
+            let inertia: Vec<f64> = match raw.extract::<Vec<Vec<f64>>>() {
+                Ok(rows) => rows.into_iter().flatten().collect(),
+                Err(_) => raw.extract::<Vec<f64>>()?,
+            };
+            let inertia: [f64; 9] = inertia
+                .try_into()
+                .map_err(|_| pyo3::exceptions::PyValueError::new_err("inertia must have 9 values"))?;
+            let field3 = |key: &str, default: [f64; 3]| -> PyResult<[f64; 3]> {
+                match out.get_item(key) {
+                    Ok(v) => v.extract(),
+                    Err(_) => Ok(default),
+                }
+            };
+            let local_rot = match out.get_item("local_rot") {
+                Ok(v) => v.extract()?,
+                Err(_) => defaults.local_rot,
+            };
+            table.insert(
+                collider,
+                core::MassInformation {
+                    volume: out.get_item("volume")?.extract()?,
+                    inertia,
+                    center_of_mass: field3("center_of_mass", defaults.center_of_mass)?,
+                    local_pos: field3("local_pos", defaults.local_pos)?,
+                    local_rot,
+                },
+            );
+        }
+        let mass = slf
+            .borrow_mut()
+            .inner
+            .mass_properties(handle, |c| table.get(&c).copied())
+            .map_err(py_err)?;
+        let d = PyDict::new(py);
+        d.set_item("mass", mass.mass)?;
+        d.set_item("diagonal_inertia", mass.diagonal_inertia)?;
+        d.set_item("center_of_mass", mass.center_of_mass)?;
+        d.set_item("principal_axes", mass.principal_axes)?;
+        Ok(d)
     }
 
     fn prototypes(slf: &Bound<'_, Self>) -> PyResult<Vec<Prim>> {
@@ -1092,17 +1160,6 @@ fn physics_dict<'py>(py: Python<'py>, stage: &Bound<'py, Stage>, p: &core::Physi
         d.set_item("starts_asleep", x.starts_asleep)?;
         d.set_item("linear_velocity", x.linear_velocity)?;
         d.set_item("angular_velocity", x.angular_velocity)?;
-        match &x.mass {
-            Some(m) => {
-                let md = PyDict::new(py);
-                md.set_item("mass", m.mass)?;
-                md.set_item("diagonal_inertia", m.diagonal_inertia)?;
-                md.set_item("center_of_mass", m.center_of_mass)?;
-                md.set_item("principal_axes", m.principal_axes)?;
-                d.set_item("mass", md)?;
-            }
-            None => d.set_item("mass", py.None())?,
-        }
         list.append(d)?;
     }
     out.set_item("rigid_bodies", list)?;

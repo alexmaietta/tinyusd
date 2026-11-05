@@ -197,7 +197,7 @@ for proto, xform in zip(inst.proto_indices, inst.transforms):
 
 ## Physics
 
-`physics(options)` runs UsdPhysics parsing over a stage, the same algorithm and the same descriptors as upstream's `LoadUsdPhysicsFromRange`, and can compute each rigid body's mass properties. Everything comes back as plain data, with prims as handles.
+`physics(options)` runs UsdPhysics parsing over a stage, the same algorithm and the same descriptors as upstream's `LoadUsdPhysicsFromRange`. Everything comes back as plain data, with prims as handles.
 
 | Part | What you get |
 |---|---|
@@ -205,20 +205,33 @@ for proto, xform in zip(inst.proto_indices, inst.transforms):
 | Collision groups | filtered groups, the invert flag, and groups merged through `mergeGroup` |
 | Materials | static and dynamic friction, restitution and density |
 | Shapes | the owning body, the pose in that body's frame, materials, filtered collisions and groups, and the geometry with world scale already folded into its sizes (capsules and cylinders take scale along and across their axis separately). Meshes report their approximation and scale |
-| Rigid bodies | world position and rotation with scale reported separately, velocities, enabled, kinematic and asleep flags, filtered pairs, and optionally mass, principal inertia, center of mass and principal axes |
+| Rigid bodies | world position and rotation with scale reported separately, velocities, enabled, kinematic and asleep flags, and filtered pairs |
 | Joints | the kind (fixed, revolute, prismatic, spherical, distance, D6, custom), the authored targets and the bodies they resolve to, both local frames, break force and torque, and limits and drives listed per degree of freedom |
 | Articulations | roots, joints and bodies |
 
-Mass properties follow UsdPhysics's rules (authored mass, inertia and center of mass on the body first, then the colliders' `MassAPI`, density and bound physics material, defaulting to 1000 kg/m³). Each collider's volume and inertia are computed for spheres, cubes, cylinders, capsules, cones, sphere sets and meshes, the last from the mesh's own triangles, so a convex-hull approximation is not applied. Tapered capsules and cylinders, planes and custom shapes are reported in `diagnostics` and count as a unit mass, as upstream does.
+### Mass properties
 
-Values are in stage units by default, like upstream. Set `si_units` to convert lengths, positions, velocities, masses, inertia, densities, gravity, break forces, linear limits and drive gains to meters and kilograms using `metersPerUnit` and `kilogramsPerUnit`. Angles stay in degrees, as UsdPhysics defines them.
+`mass_properties(body, mass_info)` mirrors upstream's `UsdPhysicsRigidBodyAPI::ComputeMassProperties`. tinyusd applies UsdPhysics's rules. Authored mass, inertia, center of mass and principal axes on the body come first, then each collider's `MassAPI` mass or density, the body's density, the bound physics material's density and finally 1000 kg/m³. The colliders are then summed into one mass, principal inertia, center of mass and principal axes. The geometry comes from you. `mass_info` is called once for each collider of the body (`mass_colliders(body)` lists them) and returns its volume, its inertia tensor at unit density, its center of mass in its own frame, and its pose in the body's frame, which the parsed shape's `local_pos` and `local_rot` give. Return nothing for a collider you can't describe, and it counts as a unit mass, as upstream does. The callback may query the stage freely. Results are in stage units.
+
+```cpp
+auto mass = stage.mass_properties(body.prim, [&](const tinyusd::Prim& collider) -> std::optional<tinyusd::MassInformation> {
+    const auto& shape = shapes_by_prim.at(collider.handle());
+    auto geometry = chrono_volume_and_inertia(shape);
+    return tinyusd::MassInformation{geometry.volume, geometry.inertia, geometry.center_of_mass,
+                                    to_double(shape.local_pos), to_double(shape.local_rot)};
+});
+```
+
+In C, call `tusd_prim_mass_colliders`, fill one `TusdMassInformation` for each collider (a negative volume means "can't describe"), and pass the arrays to `tusd_prim_mass_properties`. In Python, `stage.mass_properties(body, info)` calls `info(collider)`, which returns a dict with `volume`, `inertia` and optionally `center_of_mass`, `local_pos` and `local_rot`, or `None`.
+
+Values are in stage units by default, like upstream. Set `si_units` to convert lengths, positions, velocities, densities, gravity, break forces, linear limits and drive gains to meters and kilograms using `metersPerUnit` and `kilogramsPerUnit`. Angles stay in degrees, as UsdPhysics defines them.
 
 ```cpp
 tinyusd::PhysicsOptions options;
 options.si_units = true;
 auto physics = stage.physics(options);
 for (const auto& body : physics.rigid_bodies) {
-    sim.add_body(body.prim.path(), body.position, body.rotation, body.mass->mass, body.mass->diagonal_inertia);
+    sim.add_body(body.prim.path(), body.position, body.rotation, body.kinematic);
 }
 for (const auto& joint : physics.joints) {
     sim.add_joint(joint.kind, joint.body0, joint.body1, joint.local_pos0, joint.local_rot0, joint.limits);

@@ -1,5 +1,5 @@
 from os import PathLike
-from typing import Any, Optional, Protocol, Union
+from typing import Any, Callable, Optional, Protocol, Union
 
 import numpy as np
 import numpy.typing as npt
@@ -171,8 +171,11 @@ class Stage:
         *,
         include: Optional[list[Prim]] = None,
         exclude: Optional[list[Prim]] = None,
-        compute_mass: bool = True,
         si_units: bool = False,
+    ) -> dict[str, Any]: ...
+    def mass_colliders(self, body: Prim) -> list[Prim]: ...
+    def mass_properties(
+        self, body: Prim, mass_info: Callable[[Prim], Optional[dict[str, Any]]]
     ) -> dict[str, Any]: ...
     def metadata(self, key: str) -> Any: ...
     def has_authored_metadata(self, key: str) -> bool: ...

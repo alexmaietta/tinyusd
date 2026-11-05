@@ -234,13 +234,10 @@ fn opt(stage: &Stage, prim: Option<tinyusd_core::Prim>) -> Json {
 }
 
 fn dump_physics(stage: &mut Stage) -> Json {
-    use tinyusd_core::{Axis, PhysicsOptions, ShapeKind};
-    let p = stage
-        .physics(&PhysicsOptions {
-            compute_mass: true,
-            ..PhysicsOptions::default()
-        })
-        .unwrap();
+    use tinyusd_core::{Axis, MassInformation, PhysicsOptions, ShapeKind};
+    let p = stage.physics(&PhysicsOptions::default()).unwrap();
+    let poses: std::collections::HashMap<tinyusd_core::Prim, ([f32; 3], [f32; 4])> =
+        p.shapes.iter().map(|s| (s.prim, (s.local_pos, s.local_rot))).collect();
     let axis = |a: Axis| format!("{a:?}");
     let mut shapes = Map::new();
     for s in &p.shapes {
@@ -272,11 +269,20 @@ fn dump_physics(stage: &mut Stage) -> Json {
     }
     let mut bodies = Map::new();
     for b in &p.rigid_bodies {
-        let mass = b.mass.map(|m| {
-            json!({
-                "mass": m.mass, "diagonal_inertia": m.diagonal_inertia,
-                "center_of_mass": m.center_of_mass, "principal_axes": m.principal_axes,
+        let m = stage
+            .mass_properties(b.prim, |collider| {
+                poses.get(&collider).map(|(pos, rot)| MassInformation {
+                    volume: 2.0,
+                    inertia: [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0],
+                    center_of_mass: [0.1, 0.0, 0.0],
+                    local_pos: pos.map(f64::from),
+                    local_rot: rot.map(f64::from),
+                })
             })
+            .unwrap();
+        let mass = json!({
+            "mass": m.mass, "diagonal_inertia": m.diagonal_inertia,
+            "center_of_mass": m.center_of_mass, "principal_axes": m.principal_axes,
         });
         bodies.insert(
             stage.path(b.prim).unwrap().to_owned(),

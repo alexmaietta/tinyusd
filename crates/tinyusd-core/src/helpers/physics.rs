@@ -109,6 +109,27 @@ pub struct Shape {
     pub custom_type: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MassInformation {
+    pub volume: f64,
+    pub inertia: [f64; 9],
+    pub center_of_mass: [f64; 3],
+    pub local_pos: [f64; 3],
+    pub local_rot: [f64; 4],
+}
+
+impl Default for MassInformation {
+    fn default() -> Self {
+        Self {
+            volume: -1.0,
+            inertia: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            center_of_mass: [0.0; 3],
+            local_pos: [0.0; 3],
+            local_rot: [1.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct BodyMass {
     pub mass: f64,
@@ -131,7 +152,6 @@ pub struct RigidBody {
     pub starts_asleep: bool,
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
-    pub mass: Option<BodyMass>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -206,15 +226,12 @@ pub struct Physics {
 pub struct PhysicsOptions {
     pub include: Vec<Prim>,
     pub exclude: Vec<Prim>,
-    pub compute_mass: bool,
     pub si_units: bool,
 }
 
 #[cfg(feature = "physics")]
-#[allow(clippy::needless_range_loop)]
 mod enabled {
     use std::collections::HashMap;
-    use std::f64::consts::PI;
 
     use openusd::usd;
     use openusd::{gf, sdf};
@@ -281,193 +298,6 @@ mod enabled {
             damping: v.damping,
             acceleration: v.acceleration,
         }
-    }
-
-    struct MassShape {
-        volume: f64,
-        inertia: [[f64; 3]; 3],
-        center: [f64; 3],
-    }
-
-    fn diag(v: f64, i: [f64; 3]) -> MassShape {
-        MassShape {
-            volume: v,
-            inertia: [[i[0], 0.0, 0.0], [0.0, i[1], 0.0], [0.0, 0.0, i[2]]],
-            center: [0.0; 3],
-        }
-    }
-
-    fn along(axis: Axis, axial: f64, across: f64) -> [f64; 3] {
-        match axis {
-            Axis::X => [axial, across, across],
-            Axis::Y => [across, axial, across],
-            Axis::Z => [across, across, axial],
-        }
-    }
-
-    fn sphere(r: f64) -> MassShape {
-        let v = 4.0 / 3.0 * PI * r.powi(3);
-        let i = 0.4 * v * r * r;
-        diag(v, [i; 3])
-    }
-
-    fn combine(parts: Vec<MassShape>) -> Option<MassShape> {
-        let volume: f64 = parts.iter().map(|p| p.volume).sum();
-        if volume <= 0.0 {
-            return None;
-        }
-        let mut center = [0.0; 3];
-        for p in &parts {
-            for k in 0..3 {
-                center[k] += p.center[k] * p.volume / volume;
-            }
-        }
-        let mut inertia = [[0.0; 3]; 3];
-        for p in &parts {
-            let d = [
-                p.center[0] - center[0],
-                p.center[1] - center[1],
-                p.center[2] - center[2],
-            ];
-            let dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-            for r in 0..3 {
-                for c in 0..3 {
-                    let kron = if r == c { 1.0 } else { 0.0 };
-                    inertia[r][c] += p.inertia[r][c] + p.volume * (dd * kron - d[r] * d[c]);
-                }
-            }
-        }
-        Some(MassShape {
-            volume,
-            inertia,
-            center,
-        })
-    }
-
-    fn mesh_shape(prim: &usd::Prim, scale: [f32; 3]) -> Option<MassShape> {
-        let points = prim.attribute("points").get::<Vec<gf::Vec3f>>().ok()??;
-        let counts = prim.attribute("faceVertexCounts").get::<Vec<i32>>().ok()??;
-        let indices = prim.attribute("faceVertexIndices").get::<Vec<i32>>().ok()??;
-        let p = |i: i32| -> Option<[f64; 3]> {
-            let v = points.get(usize::try_from(i).ok()?)?;
-            Some([
-                f64::from(v.x * scale[0]),
-                f64::from(v.y * scale[1]),
-                f64::from(v.z * scale[2]),
-            ])
-        };
-        let (mut volume, mut first, mut cov) = (0.0, [0.0; 3], [[0.0; 3]; 3]);
-        let mut start = 0usize;
-        for &count in &counts {
-            let count = usize::try_from(count).ok()?;
-            let face = indices.get(start..start + count)?;
-            for k in 1..count.saturating_sub(1) {
-                let (a, b, c) = (p(face[0])?, p(face[k])?, p(face[k + 1])?);
-                let det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                    + a[2] * (b[0] * c[1] - b[1] * c[0]);
-                volume += det / 6.0;
-                let s = [a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2]];
-                for r in 0..3 {
-                    first[r] += det / 24.0 * s[r];
-                    for col in 0..3 {
-                        cov[r][col] += det / 120.0 * (a[r] * a[col] + b[r] * b[col] + c[r] * c[col] + s[r] * s[col]);
-                    }
-                }
-            }
-            start += count;
-        }
-        if volume.abs() < 1e-12 {
-            return None;
-        }
-        let sign = volume.signum();
-        let (volume, first) = (volume * sign, first.map(|f| f * sign));
-        let center = first.map(|f| f / volume);
-        let mut c = [[0.0; 3]; 3];
-        for r in 0..3 {
-            for col in 0..3 {
-                c[r][col] = cov[r][col] * sign - volume * center[r] * center[col];
-            }
-        }
-        let trace = c[0][0] + c[1][1] + c[2][2];
-        let mut inertia = [[0.0; 3]; 3];
-        for r in 0..3 {
-            for col in 0..3 {
-                inertia[r][col] = if r == col { trace } else { 0.0 } - c[r][col];
-            }
-        }
-        Some(MassShape {
-            volume,
-            inertia,
-            center,
-        })
-    }
-
-    fn mass_shape(shape: &Shape, prim: &usd::Prim) -> std::result::Result<Option<MassShape>, String> {
-        let r = f64::from(shape.radius);
-        let h = f64::from(shape.half_height);
-        Ok(match shape.kind {
-            ShapeKind::Sphere => Some(sphere(r)),
-            ShapeKind::Cube => {
-                let [a, b, c] = shape.half_extents.map(f64::from);
-                let v = 8.0 * a * b * c;
-                Some(diag(
-                    v,
-                    [
-                        v * (b * b + c * c) / 3.0,
-                        v * (a * a + c * c) / 3.0,
-                        v * (a * a + b * b) / 3.0,
-                    ],
-                ))
-            }
-            ShapeKind::Cylinder => {
-                let l = 2.0 * h;
-                let v = PI * r * r * l;
-                Some(diag(
-                    v,
-                    along(shape.axis, v * r * r / 2.0, v * (3.0 * r * r + l * l) / 12.0),
-                ))
-            }
-            ShapeKind::Capsule => {
-                let l = 2.0 * h;
-                let vc = PI * r * r * l;
-                let vh = 4.0 / 3.0 * PI * r.powi(3);
-                let axial = vc * r * r / 2.0 + vh * 0.4 * r * r;
-                let across = vc * (l * l / 12.0 + r * r / 4.0) + vh * (0.4 * r * r + l * l / 4.0 + 3.0 * l * r / 8.0);
-                Some(diag(vc + vh, along(shape.axis, axial, across)))
-            }
-            ShapeKind::Cone => {
-                let height = 2.0 * h;
-                let v = PI * r * r * height / 3.0;
-                let mut s = diag(
-                    v,
-                    along(
-                        shape.axis,
-                        0.3 * v * r * r,
-                        v * (3.0 * r * r / 20.0 + 3.0 * height * height / 80.0),
-                    ),
-                );
-                s.center[shape.axis as usize] = -h / 2.0;
-                Some(s)
-            }
-            ShapeKind::SpherePoints => combine(
-                shape
-                    .sphere_points
-                    .iter()
-                    .map(|p| MassShape {
-                        center: [p[0], p[1], p[2]].map(f64::from),
-                        ..sphere(f64::from(p[3]))
-                    })
-                    .collect(),
-            ),
-            ShapeKind::Mesh => mesh_shape(prim, shape.mesh_scale),
-            ShapeKind::Capsule1 | ShapeKind::Cylinder1 | ShapeKind::Plane | ShapeKind::Custom => None,
-        })
-    }
-
-    fn mat3(m: [[f64; 3]; 3]) -> gf::Mat3d {
-        gf::Mat3d([
-            m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2],
-        ])
     }
 
     impl Stage {
@@ -649,7 +479,6 @@ mod enabled {
                     starts_asleep: b.starts_asleep,
                     linear_velocity: v3(b.linear_velocity),
                     angular_velocity: v3(b.angular_velocity),
-                    mass: None,
                 };
                 out.rigid_bodies.push(body);
             }
@@ -729,70 +558,85 @@ mod enabled {
                 };
                 out.articulations.push(art);
             }
-            if options.compute_mass {
-                self.compute_masses(&mut out)?;
-            }
             if options.si_units {
                 to_si(&mut out);
             }
             Ok(out)
         }
 
-        fn compute_masses(&mut self, out: &mut Physics) -> Result<()> {
-            let shapes: HashMap<Prim, Shape> = out.shapes.iter().map(|s| (s.prim, s.clone())).collect();
-            let mut by_path = HashMap::new();
-            for s in &out.shapes {
-                by_path.insert(self.sdf_path(s.prim)?.clone(), s.prim);
-            }
-            for body in &mut out.rigid_bodies {
-                let api = openusd_schemas::physics::RigidBodyAPI::from_prim_unchecked(self.usd_prim(body.prim)?);
-                let mut unsupported = Vec::new();
-                let mass = api
-                    .mass_properties(|prim| {
-                        let Some(shape) = by_path.get(prim.path()).and_then(|p| shapes.get(p)) else {
-                            unsupported.push(prim.path().to_string());
-                            return Ok(physics::MassInformation::UNSUPPORTED);
-                        };
-                        let computed = mass_shape(shape, prim).unwrap_or(None);
-                        let Some(m) = computed else {
-                            unsupported.push(prim.path().to_string());
-                            return Ok(physics::MassInformation::UNSUPPORTED);
-                        };
-                        let [w, x, y, z] = shape.local_rot.map(f64::from);
-                        let [px, py, pz] = shape.local_pos.map(f64::from);
-                        Ok(physics::MassInformation {
-                            volume: m.volume,
-                            inertia: mat3(m.inertia),
-                            center_of_mass: gf::Vec3d {
-                                x: m.center[0],
-                                y: m.center[1],
-                                z: m.center[2],
-                            },
-                            local_pos: gf::Vec3d { x: px, y: py, z: pz },
-                            local_rot: gf::Quatd { w, x, y, z },
-                        })
-                    })
-                    .map_err(usd_err)?;
-                for path in unsupported {
-                    out.diagnostics.push(format!("MassNotComputed({path})"));
+        pub fn mass_colliders(&mut self, body: Prim) -> Result<Vec<Prim>> {
+            let body_prim = self.usd_prim(body)?;
+            let mut paths = Vec::new();
+            let mut walk = body_prim
+                .filtered_subtree(usd::PrimPredicate::DEFAULT_PROXIES)
+                .map_err(usd_err)?;
+            while let Some(prim) = walk.next() {
+                let prim = prim.map_err(usd_err)?;
+                let schemas = prim.api_schemas().map_err(usd_err)?;
+                let carries = |name: &str| schemas.iter().any(|s| s.as_str() == name);
+                if prim != body_prim && carries("PhysicsRigidBodyAPI") {
+                    walk.prune_children();
+                } else if carries("PhysicsCollisionAPI") {
+                    paths.push(prim.path().clone());
                 }
-                body.mass = Some(BodyMass {
-                    mass: mass.mass,
-                    diagonal_inertia: [
-                        mass.diagonal_inertia.x,
-                        mass.diagonal_inertia.y,
-                        mass.diagonal_inertia.z,
-                    ],
-                    center_of_mass: [mass.center_of_mass.x, mass.center_of_mass.y, mass.center_of_mass.z],
-                    principal_axes: [
-                        mass.principal_axes.w,
-                        mass.principal_axes.x,
-                        mass.principal_axes.y,
-                        mass.principal_axes.z,
-                    ],
-                });
             }
-            Ok(())
+            Ok(paths.iter().map(|p| self.intern(p)).collect())
+        }
+
+        pub fn mass_properties(
+            &mut self,
+            body: Prim,
+            mut mass_info: impl FnMut(Prim) -> Option<MassInformation>,
+        ) -> Result<BodyMass> {
+            let mut colliders = HashMap::new();
+            for collider in self.mass_colliders(body)? {
+                colliders.insert(self.sdf_path(collider)?.clone(), collider);
+            }
+            let body_prim = self.usd_prim(body)?;
+            let api = physics::RigidBodyAPI::from_prim_unchecked(body_prim);
+            let mass = api
+                .mass_properties(|prim| {
+                    let info = colliders.get(prim.path()).and_then(|&h| mass_info(h));
+                    Ok(match info {
+                        Some(m) => physics::MassInformation {
+                            volume: m.volume,
+                            inertia: gf::Mat3d(m.inertia),
+                            center_of_mass: gf::Vec3d {
+                                x: m.center_of_mass[0],
+                                y: m.center_of_mass[1],
+                                z: m.center_of_mass[2],
+                            },
+                            local_pos: gf::Vec3d {
+                                x: m.local_pos[0],
+                                y: m.local_pos[1],
+                                z: m.local_pos[2],
+                            },
+                            local_rot: gf::Quatd {
+                                w: m.local_rot[0],
+                                x: m.local_rot[1],
+                                y: m.local_rot[2],
+                                z: m.local_rot[3],
+                            },
+                        },
+                        None => physics::MassInformation::UNSUPPORTED,
+                    })
+                })
+                .map_err(usd_err)?;
+            Ok(BodyMass {
+                mass: mass.mass,
+                diagonal_inertia: [
+                    mass.diagonal_inertia.x,
+                    mass.diagonal_inertia.y,
+                    mass.diagonal_inertia.z,
+                ],
+                center_of_mass: [mass.center_of_mass.x, mass.center_of_mass.y, mass.center_of_mass.z],
+                principal_axes: [
+                    mass.principal_axes.w,
+                    mass.principal_axes.x,
+                    mass.principal_axes.y,
+                    mass.principal_axes.z,
+                ],
+            })
         }
     }
 
@@ -836,13 +680,6 @@ mod enabled {
         for b in &mut p.rigid_bodies {
             scale3(&mut b.position, l);
             scale3(&mut b.linear_velocity, l);
-            if let Some(mass) = &mut b.mass {
-                if mass.mass > 0.0 {
-                    mass.mass *= m;
-                }
-                mass.diagonal_inertia = mass.diagonal_inertia.map(|i| i * m * l * l);
-                mass.center_of_mass = mass.center_of_mass.map(|c| c * l);
-            }
         }
         for j in &mut p.joints {
             scale3(&mut j.local_pos0, l);
@@ -885,6 +722,18 @@ mod enabled {
 #[cfg(not(feature = "physics"))]
 impl Stage {
     pub fn physics(&mut self, _options: &PhysicsOptions) -> Result<Physics> {
+        Err(crate::Error::FeatureDisabled("physics"))
+    }
+
+    pub fn mass_colliders(&mut self, _body: Prim) -> Result<Vec<Prim>> {
+        Err(crate::Error::FeatureDisabled("physics"))
+    }
+
+    pub fn mass_properties(
+        &mut self,
+        _body: Prim,
+        _mass_info: impl FnMut(Prim) -> Option<MassInformation>,
+    ) -> Result<BodyMass> {
         Err(crate::Error::FeatureDisabled("physics"))
     }
 }

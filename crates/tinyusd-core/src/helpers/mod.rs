@@ -8,8 +8,8 @@ mod xform;
 pub use instancer::Instances;
 pub use material::BoundMaterial;
 pub use physics::{
-    Articulation, Axis, BodyMass, CollisionGroup, Dof, Joint, JointDrive, JointKind, JointLimit, Physics,
-    PhysicsMaterial, PhysicsOptions, PhysicsScene, RigidBody, Shape, ShapeKind,
+    Articulation, Axis, BodyMass, CollisionGroup, Dof, Joint, JointDrive, JointKind, JointLimit, MassInformation,
+    Physics, PhysicsMaterial, PhysicsOptions, PhysicsScene, RigidBody, Shape, ShapeKind,
 };
 pub use primvar::{Interpolation, PrimvarInfo};
 pub use skel::{BlendShapes, SkelBinding, SkeletonPose, SkinBinding, SkinningMethod, SubShape};

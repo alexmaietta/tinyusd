@@ -241,63 +241,6 @@ def popt(path):
 AXIS = {"X": "X", "Y": "Y", "Z": "Z"}
 
 
-def shape_mass(kind, d, prim):
-    if kind == "Sphere":
-        r = d.radius
-        v = 4.0 / 3.0 * math.pi * r**3
-        return v, [0.4 * v * r * r] * 3, [0, 0, 0]
-    if kind == "Cube":
-        a, b, c = d.halfExtents
-        v = 8 * a * b * c
-        return v, [v * (b * b + c * c) / 3, v * (a * a + c * c) / 3, v * (a * a + b * b) / 3], [0, 0, 0]
-    idx = "XYZ".index(str(getattr(d, "axis", "Z")))
-    def along(axial, across):
-        out = [across] * 3
-        out[idx] = axial
-        return out
-    if kind == "Cylinder":
-        r, l = d.radius, 2 * d.halfHeight
-        v = math.pi * r * r * l
-        return v, along(v * r * r / 2, v * (3 * r * r + l * l) / 12), [0, 0, 0]
-    if kind == "Capsule":
-        r, l = d.radius, 2 * d.halfHeight
-        vc, vh = math.pi * r * r * l, 4 / 3 * math.pi * r**3
-        return vc + vh, along(vc * r * r / 2 + vh * 0.4 * r * r, vc * (l * l / 12 + r * r / 4) + vh * (0.4 * r * r + l * l / 4 + 3 * l * r / 8)), [0, 0, 0]
-    if kind == "Cone":
-        r, h = d.radius, 2 * d.halfHeight
-        v = math.pi * r * r * h / 3
-        com = [0, 0, 0]
-        com[idx] = -d.halfHeight / 2
-        return v, along(0.3 * v * r * r, v * (3 * r * r / 20 + 3 * h * h / 80)), com
-    if kind == "Mesh":
-        mesh = UsdGeom.Mesh(prim)
-        pts = [Gf.Vec3d(p[0] * d.meshScale[0], p[1] * d.meshScale[1], p[2] * d.meshScale[2]) for p in mesh.GetPointsAttr().Get()]
-        counts, idxs = mesh.GetFaceVertexCountsAttr().Get(), mesh.GetFaceVertexIndicesAttr().Get()
-        vol, first, cov, start = 0.0, Gf.Vec3d(0), [[0.0] * 3 for _ in range(3)], 0
-        for n in counts:
-            f = idxs[start:start + n]
-            for k in range(1, n - 1):
-                a, b, c = pts[f[0]], pts[f[k]], pts[f[k + 1]]
-                det = a * Gf.Cross(b, c)
-                vol += det / 6
-                sm = a + b + c
-                first += sm * (det / 24)
-                for i in range(3):
-                    for j in range(3):
-                        cov[i][j] += det / 120 * (a[i] * a[j] + b[i] * b[j] + c[i] * c[j] + sm[i] * sm[j])
-            start += n
-        if abs(vol) < 1e-12:
-            return None
-        sign = 1 if vol > 0 else -1
-        vol, first = vol * sign, first * sign
-        com = first / vol
-        cc = [[cov[i][j] * sign - vol * com[i] * com[j] for j in range(3)] for i in range(3)]
-        tr = cc[0][0] + cc[1][1] + cc[2][2]
-        full = [[(tr if i == j else 0) - cc[i][j] for j in range(3)] for i in range(3)]
-        return vol, full, list(com)
-    return None
-
-
 def authored_invert(stage, path, desc):
     attr = UsdPhysics.CollisionGroup(stage.GetPrimAtPath(path)).GetInvertFilteredGroupsAttr()
     return desc.invertFilteredGroups if attr and attr.HasAuthoredValue() else False
@@ -336,16 +279,12 @@ def physics_reference(stage):
         def info(collider):
             entry = shape_descs.get(str(collider.GetPath()))
             out = UsdPhysics.RigidBodyAPI.MassInformation()
-            computed = shape_mass(entry[0], entry[1], collider) if entry else None
-            if computed is None:
+            if entry is None:
                 out.volume = -1.0
                 return out
-            v, inertia, com = computed
-            if not isinstance(inertia[0], list):
-                inertia = [[inertia[i] if i == j else 0 for j in range(3)] for i in range(3)]
-            out.volume = v
-            out.inertia = Gf.Matrix3f(*[c for row in inertia for c in row])
-            out.centerOfMass = Gf.Vec3f(*com)
+            out.volume = 2.0
+            out.inertia = Gf.Matrix3f(1, 0, 0, 0, 2, 0, 0, 0, 3)
+            out.centerOfMass = Gf.Vec3f(0.1, 0, 0)
             out.localPos = entry[1].localPos
             out.localRot = entry[1].localRot
             return out

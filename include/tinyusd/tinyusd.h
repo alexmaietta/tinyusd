@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TUSD_ABI_VERSION 7
+#define TUSD_ABI_VERSION 8
 
 typedef enum TusdStatus {
   TUSD_STATUS_OK = 0,
@@ -290,7 +290,6 @@ typedef struct TusdPhysicsOptions {
   size_t include_count;
   const TusdPrim *exclude;
   size_t exclude_count;
-  bool compute_mass;
   bool si_units;
 } TusdPhysicsOptions;
 
@@ -364,11 +363,6 @@ typedef struct TusdRigidBodyView {
   bool starts_asleep;
   float linear_velocity[3];
   float angular_velocity[3];
-  bool has_mass;
-  double mass;
-  double diagonal_inertia[3];
-  double center_of_mass[3];
-  double principal_axes[4];
 } TusdRigidBodyView;
 
 typedef struct TusdJointLimit {
@@ -425,6 +419,21 @@ typedef struct TusdArticulationView {
   const TusdPrim *bodies;
   size_t body_count;
 } TusdArticulationView;
+
+typedef struct TusdMassInformation {
+  double volume;
+  double inertia[9];
+  double center_of_mass[3];
+  double local_pos[3];
+  double local_rot[4];
+} TusdMassInformation;
+
+typedef struct TusdBodyMass {
+  double mass;
+  double diagonal_inertia[3];
+  double center_of_mass[3];
+  double principal_axes[4];
+} TusdBodyMass;
 
 #define TUSD_NO_PRIM UINT32_MAX
 
@@ -788,6 +797,17 @@ enum TusdStatus tusd_physics_articulation(const struct TusdPhysics *physics,
                                           struct TusdArticulationView *out);
 
 const char *tusd_physics_diagnostic(const struct TusdPhysics *physics, size_t index);
+
+enum TusdStatus tusd_prim_mass_colliders(struct TusdStage *stage,
+                                         TusdPrim body,
+                                         struct TusdPrimList *out);
+
+enum TusdStatus tusd_prim_mass_properties(struct TusdStage *stage,
+                                          TusdPrim body,
+                                          const TusdPrim *colliders,
+                                          const struct TusdMassInformation *infos,
+                                          size_t count,
+                                          struct TusdBodyMass *out);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -809,7 +810,6 @@ enum class Dof : int {
 struct PhysicsOptions {
     std::vector<Prim> include;
     std::vector<Prim> exclude;
-    bool compute_mass = true;
     bool si_units = false;
 };
 
@@ -880,8 +880,17 @@ struct RigidBody {
     bool starts_asleep;
     Vec3 linear_velocity;
     Vec3 angular_velocity;
-    std::optional<BodyMass> mass;
 };
+
+struct MassInformation {
+    double volume;
+    std::array<double, 9> inertia;
+    std::array<double, 3> center_of_mass;
+    std::array<double, 3> local_pos;
+    std::array<double, 4> local_rot;
+};
+
+using MassInfoFn = std::function<std::optional<MassInformation>(const Prim& collider)>;
 
 struct JointLimit {
     Dof dof;
@@ -1028,7 +1037,6 @@ public:
         raw.include_count = include.size();
         raw.exclude = exclude.data();
         raw.exclude_count = exclude.size();
-        raw.compute_mass = options.compute_mass;
         raw.si_units = options.si_units;
         std::unique_ptr<TusdPhysics, detail::PhysicsDeleter> r(tusd_physics_new());
         detail::check(tusd_stage_physics(stage_.get(), &raw, r.get()));
@@ -1090,13 +1098,7 @@ public:
                         list(v.filtered_collisions, v.filtered_collision_count),
                         list(v.simulation_owners, v.simulation_owner_count), v3(v.position), q4(v.rotation),
                         v3(v.scale), v.enabled, v.kinematic, v.starts_asleep, v3(v.linear_velocity),
-                        v3(v.angular_velocity), std::nullopt};
-            if (v.has_mass) {
-                b.mass = BodyMass{v.mass,
-                                  {v.diagonal_inertia[0], v.diagonal_inertia[1], v.diagonal_inertia[2]},
-                                  {v.center_of_mass[0], v.center_of_mass[1], v.center_of_mass[2]},
-                                  {v.principal_axes[0], v.principal_axes[1], v.principal_axes[2], v.principal_axes[3]}};
-            }
+                        v3(v.angular_velocity)};
             out.rigid_bodies.push_back(std::move(b));
         }
         for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_JOINT); ++i) {
@@ -1130,6 +1132,36 @@ public:
             out.diagnostics.push_back(str(tusd_physics_diagnostic(r.get(), i)));
         }
         return out;
+    }
+
+    std::vector<Prim> mass_colliders(const Prim& body) const {
+        own(body);
+        return pseudo_root().prims(
+            [&](TusdPrimList* l) { return tusd_prim_mass_colliders(stage_.get(), body.handle(), l); });
+    }
+
+    BodyMass mass_properties(const Prim& body, const MassInfoFn& mass_info) const {
+        std::vector<TusdPrim> colliders;
+        std::vector<TusdMassInformation> infos;
+        for (const auto& collider : mass_colliders(body)) {
+            auto info = mass_info(collider);
+            if (!info) continue;
+            TusdMassInformation raw{};
+            raw.volume = info->volume;
+            for (int k = 0; k < 9; ++k) raw.inertia[k] = info->inertia[k];
+            for (int k = 0; k < 3; ++k) raw.center_of_mass[k] = info->center_of_mass[k];
+            for (int k = 0; k < 3; ++k) raw.local_pos[k] = info->local_pos[k];
+            for (int k = 0; k < 4; ++k) raw.local_rot[k] = info->local_rot[k];
+            colliders.push_back(collider.handle());
+            infos.push_back(raw);
+        }
+        TusdBodyMass m;
+        detail::check(tusd_prim_mass_properties(stage_.get(), body.handle(), colliders.data(), infos.data(),
+                                                colliders.size(), &m));
+        return BodyMass{m.mass,
+                        {m.diagonal_inertia[0], m.diagonal_inertia[1], m.diagonal_inertia[2]},
+                        {m.center_of_mass[0], m.center_of_mass[1], m.center_of_mass[2]},
+                        {m.principal_axes[0], m.principal_axes[1], m.principal_axes[2], m.principal_axes[3]}};
     }
 
     std::vector<Prim> prototypes() const {

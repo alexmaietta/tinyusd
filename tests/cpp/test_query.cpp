@@ -244,7 +244,24 @@ int main(int argc, char** argv) {
         const tinyusd::RigidBody* crate = nullptr;
         for (const auto& b : phys.rigid_bodies)
             if (b.prim.path() == "/World/Props/Crate") crate = &b;
-        CHECK(crate && crate->mass && std::abs(crate->mass->mass - 2000.0) < 1e-6);
+        CHECK(crate);
+        std::map<TusdPrim, std::pair<tinyusd::Vec3, tinyusd::Quat>> poses;
+        for (const auto& sh : phys.shapes) poses[sh.prim.handle()] = {sh.local_pos, sh.local_rot};
+        CHECK(ps.mass_colliders(crate->prim).size() == 1);
+        auto mass = ps.mass_properties(crate->prim, [&](const tinyusd::Prim& c) -> std::optional<tinyusd::MassInformation> {
+            if (c.path() != "/World/Props/Crate") return std::nullopt;
+            auto it = poses.find(c.handle());
+            if (it == poses.end()) return std::nullopt;
+            tinyusd::MassInformation m{10.0, {1, 0, 0, 0, 1, 0, 0, 0, 1}, {0, 0, 0}, {}, {}};
+            for (int k = 0; k < 3; ++k) m.local_pos[k] = it->second.first[k];
+            for (int k = 0; k < 4; ++k) m.local_rot[k] = it->second.second[k];
+            return m;
+        });
+        CHECK(std::abs(mass.mass - 10.0) < 1e-9);
+        auto authored = ps.mass_properties(*ps.prim("/World/Robot/Base"), [](const tinyusd::Prim&) {
+            return std::optional<tinyusd::MassInformation>();
+        });
+        CHECK(authored.mass == 5000.0 && authored.diagonal_inertia[2] == 30.0);
         CHECK(phys.articulations[0].roots[0].path() == "/World/Robot/Base");
         tinyusd::PhysicsOptions si;
         si.si_units = true;
@@ -252,7 +269,7 @@ int main(int argc, char** argv) {
         auto props = ps.physics(si);
         CHECK(props.si_units && props.rigid_bodies.size() == 4 && props.scenes.empty());
         for (const auto& b : props.rigid_bodies)
-            if (b.prim.path() == "/World/Props/Crate") CHECK(std::abs(b.mass->mass - 2.0) < 1e-9);
+            if (b.prim.path() == "/World/Props/Crate") CHECK(std::abs(b.position[2] - 0.4f) < 1e-6f);
     }
 
     auto unloaded = tinyusd::Stage::open(data + "/query.usda", {false});

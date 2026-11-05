@@ -6,8 +6,8 @@ mod value;
 
 pub use helpers::{
     Articulation, Axis, BlendShapes, BodyMass, BoundMaterial, CollisionGroup, Dof, Instances, Interpolation, Joint,
-    JointDrive, JointKind, JointLimit, Physics, PhysicsMaterial, PhysicsOptions, PhysicsScene, PrimvarInfo, RigidBody,
-    Shape, ShapeKind, SkelBinding, SkeletonPose, SkinBinding, SkinningMethod, SubShape,
+    JointDrive, JointKind, JointLimit, MassInformation, Physics, PhysicsMaterial, PhysicsOptions, PhysicsScene,
+    PrimvarInfo, RigidBody, Shape, ShapeKind, SkelBinding, SkeletonPose, SkinBinding, SkinningMethod, SubShape,
 };
 pub use host::AssetResolver;
 pub use stage::{AttributeInfo, OpenOptions, Prim, PrimFlags, Specifier, Stage, TraverseFlags};
