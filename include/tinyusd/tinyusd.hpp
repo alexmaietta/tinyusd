@@ -767,6 +767,188 @@ inline std::vector<double> Prim::time_samples(const std::string& attribute) cons
     return std::vector<double>(s.begin(), s.end());
 }
 
+using Quat = std::array<float, 4>;
+using Vec3 = std::array<float, 3>;
+
+enum class Axis : int { X = TUSD_AXIS_X, Y = TUSD_AXIS_Y, Z = TUSD_AXIS_Z };
+
+enum class ShapeKind : int {
+    Sphere = TUSD_SHAPE_KIND_SPHERE,
+    Cube = TUSD_SHAPE_KIND_CUBE,
+    Capsule = TUSD_SHAPE_KIND_CAPSULE,
+    Capsule1 = TUSD_SHAPE_KIND_CAPSULE1,
+    Cylinder = TUSD_SHAPE_KIND_CYLINDER,
+    Cylinder1 = TUSD_SHAPE_KIND_CYLINDER1,
+    Cone = TUSD_SHAPE_KIND_CONE,
+    Plane = TUSD_SHAPE_KIND_PLANE,
+    Mesh = TUSD_SHAPE_KIND_MESH,
+    SpherePoints = TUSD_SHAPE_KIND_SPHERE_POINTS,
+    Custom = TUSD_SHAPE_KIND_CUSTOM,
+};
+
+enum class JointKind : int {
+    Fixed = TUSD_JOINT_KIND_FIXED,
+    Revolute = TUSD_JOINT_KIND_REVOLUTE,
+    Prismatic = TUSD_JOINT_KIND_PRISMATIC,
+    Spherical = TUSD_JOINT_KIND_SPHERICAL,
+    Distance = TUSD_JOINT_KIND_DISTANCE,
+    D6 = TUSD_JOINT_KIND_D6,
+    Custom = TUSD_JOINT_KIND_CUSTOM,
+};
+
+enum class Dof : int {
+    Distance = TUSD_DOF_DISTANCE,
+    TransX = TUSD_DOF_TRANS_X,
+    TransY = TUSD_DOF_TRANS_Y,
+    TransZ = TUSD_DOF_TRANS_Z,
+    RotX = TUSD_DOF_ROT_X,
+    RotY = TUSD_DOF_ROT_Y,
+    RotZ = TUSD_DOF_ROT_Z,
+};
+
+struct PhysicsOptions {
+    std::vector<Prim> include;
+    std::vector<Prim> exclude;
+    bool compute_mass = true;
+    bool si_units = false;
+};
+
+struct PhysicsScene {
+    Prim prim;
+    Vec3 gravity_direction;
+    float gravity_magnitude;
+};
+
+struct CollisionGroup {
+    Prim prim;
+    bool invert_filtered_groups;
+    std::vector<Prim> filtered_groups;
+    std::string merge_group_name;
+    std::vector<Prim> merged_groups;
+};
+
+struct PhysicsMaterial {
+    Prim prim;
+    float static_friction;
+    float dynamic_friction;
+    float restitution;
+    float density;
+};
+
+struct Shape {
+    Prim prim;
+    std::optional<Prim> rigid_body;
+    Vec3 local_pos;
+    Quat local_rot;
+    Vec3 local_scale;
+    std::vector<Prim> materials;
+    std::vector<Prim> simulation_owners;
+    std::vector<Prim> filtered_collisions;
+    std::vector<Prim> collision_groups;
+    bool collision_enabled;
+    ShapeKind kind;
+    float radius;
+    float top_radius;
+    float bottom_radius;
+    float half_height;
+    Vec3 half_extents;
+    Axis axis;
+    std::string mesh_approximation;
+    Vec3 mesh_scale;
+    bool double_sided;
+    std::vector<std::array<float, 4>> sphere_points;
+    std::string custom_type;
+};
+
+struct BodyMass {
+    double mass;
+    std::array<double, 3> diagonal_inertia;
+    std::array<double, 3> center_of_mass;
+    std::array<double, 4> principal_axes;
+};
+
+struct RigidBody {
+    Prim prim;
+    std::vector<Prim> collisions;
+    std::vector<Prim> filtered_collisions;
+    std::vector<Prim> simulation_owners;
+    Vec3 position;
+    Quat rotation;
+    Vec3 scale;
+    bool enabled;
+    bool kinematic;
+    bool starts_asleep;
+    Vec3 linear_velocity;
+    Vec3 angular_velocity;
+    std::optional<BodyMass> mass;
+};
+
+struct JointLimit {
+    Dof dof;
+    bool enabled;
+    float lower;
+    float upper;
+};
+
+struct JointDrive {
+    Dof dof;
+    float target_position;
+    float target_velocity;
+    float force_limit;
+    float stiffness;
+    float damping;
+    bool acceleration;
+};
+
+struct Joint {
+    Prim prim;
+    JointKind kind;
+    std::string type_name;
+    std::optional<Prim> rel0, rel1, body0, body1;
+    Vec3 local_pos0;
+    Quat local_rot0;
+    Vec3 local_pos1;
+    Quat local_rot1;
+    bool enabled;
+    bool collision_enabled;
+    float break_force;
+    float break_torque;
+    bool exclude_from_articulation;
+    Axis axis;
+    std::vector<JointLimit> limits;
+    std::vector<JointDrive> drives;
+    bool min_distance_enabled;
+    bool max_distance_enabled;
+};
+
+struct Articulation {
+    Prim prim;
+    std::vector<Prim> roots;
+    std::vector<Prim> filtered_collisions;
+    std::vector<Prim> joints;
+    std::vector<std::optional<Prim>> bodies;
+};
+
+struct Physics {
+    double meters_per_unit;
+    double kilograms_per_unit;
+    bool si_units;
+    std::vector<PhysicsScene> scenes;
+    std::vector<CollisionGroup> collision_groups;
+    std::vector<PhysicsMaterial> materials;
+    std::vector<Shape> shapes;
+    std::vector<RigidBody> rigid_bodies;
+    std::vector<Joint> joints;
+    std::vector<Articulation> articulations;
+    std::vector<std::string> diagnostics;
+};
+
+namespace detail {
+struct PhysicsDeleter {
+    void operator()(TusdPhysics* p) const noexcept { tusd_physics_free(p); }
+};
+}
+
 class Stage {
 public:
     static Stage open(const std::string& path, const OpenOptions& options = {}) {
@@ -826,6 +1008,126 @@ public:
             if (v.has_animation) b.animation = Prim(stage_.get(), v.animation);
             for (std::size_t k = 0; k < v.skinned_count; ++k) b.skinned.push_back(Prim(stage_.get(), v.skinned[k]));
             out.push_back(std::move(b));
+        }
+        return out;
+    }
+
+    Physics physics(const PhysicsOptions& options = {}) const {
+        TusdPhysicsOptions raw;
+        tusd_physics_options_init(&raw);
+        std::vector<TusdPrim> include, exclude;
+        for (const auto& p : options.include) {
+            own(p);
+            include.push_back(p.handle());
+        }
+        for (const auto& p : options.exclude) {
+            own(p);
+            exclude.push_back(p.handle());
+        }
+        raw.include = include.data();
+        raw.include_count = include.size();
+        raw.exclude = exclude.data();
+        raw.exclude_count = exclude.size();
+        raw.compute_mass = options.compute_mass;
+        raw.si_units = options.si_units;
+        std::unique_ptr<TusdPhysics, detail::PhysicsDeleter> r(tusd_physics_new());
+        detail::check(tusd_stage_physics(stage_.get(), &raw, r.get()));
+
+        TusdStage* s = stage_.get();
+        auto prim = [s](TusdPrim h) { return Prim(s, h); };
+        auto opt = [s](TusdPrim h) -> std::optional<Prim> {
+            if (h == TUSD_NO_PRIM) return std::nullopt;
+            return Prim(s, h);
+        };
+        auto list = [&](const TusdPrim* p, std::size_t n) {
+            std::vector<Prim> out;
+            for (std::size_t i = 0; i < n; ++i) out.push_back(prim(p[i]));
+            return out;
+        };
+        auto str = [](const char* c) { return c ? std::string(c) : std::string(); };
+        auto v3 = [](const float* v) { return Vec3{v[0], v[1], v[2]}; };
+        auto q4 = [](const float* v) { return Quat{v[0], v[1], v[2], v[3]}; };
+
+        Physics out{};
+        detail::check(tusd_physics_units(r.get(), &out.meters_per_unit, &out.kilograms_per_unit, &out.si_units));
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_SCENE); ++i) {
+            TusdPhysicsSceneView v;
+            detail::check(tusd_physics_scene(r.get(), i, &v));
+            out.scenes.push_back({prim(v.prim), v3(v.gravity_direction), v.gravity_magnitude});
+        }
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_COLLISION_GROUP); ++i) {
+            TusdCollisionGroupView v;
+            detail::check(tusd_physics_collision_group(r.get(), i, &v));
+            out.collision_groups.push_back({prim(v.prim), v.invert_filtered_groups,
+                                            list(v.filtered_groups, v.filtered_group_count), str(v.merge_group_name),
+                                            list(v.merged_groups, v.merged_group_count)});
+        }
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_MATERIAL); ++i) {
+            TusdPhysicsMaterialView v;
+            detail::check(tusd_physics_material(r.get(), i, &v));
+            out.materials.push_back({prim(v.prim), v.static_friction, v.dynamic_friction, v.restitution, v.density});
+        }
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_SHAPE); ++i) {
+            TusdShapeView v;
+            detail::check(tusd_physics_shape(r.get(), i, &v));
+            Shape sh{prim(v.prim), opt(v.rigid_body), v3(v.local_pos), q4(v.local_rot), v3(v.local_scale),
+                     list(v.materials, v.material_count), list(v.simulation_owners, v.simulation_owner_count),
+                     list(v.filtered_collisions, v.filtered_collision_count),
+                     list(v.collision_groups, v.collision_group_count), v.collision_enabled,
+                     static_cast<ShapeKind>(v.kind), v.radius, v.top_radius, v.bottom_radius, v.half_height,
+                     v3(v.half_extents), static_cast<Axis>(v.axis), str(v.mesh_approximation), v3(v.mesh_scale),
+                     v.double_sided, {}, str(v.custom_type)};
+            for (std::size_t k = 0; k < v.sphere_point_count; ++k) {
+                const float* sp = v.sphere_points + 4 * k;
+                sh.sphere_points.push_back({sp[0], sp[1], sp[2], sp[3]});
+            }
+            out.shapes.push_back(std::move(sh));
+        }
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_RIGID_BODY); ++i) {
+            TusdRigidBodyView v;
+            detail::check(tusd_physics_rigid_body(r.get(), i, &v));
+            RigidBody b{prim(v.prim), list(v.collisions, v.collision_count),
+                        list(v.filtered_collisions, v.filtered_collision_count),
+                        list(v.simulation_owners, v.simulation_owner_count), v3(v.position), q4(v.rotation),
+                        v3(v.scale), v.enabled, v.kinematic, v.starts_asleep, v3(v.linear_velocity),
+                        v3(v.angular_velocity), std::nullopt};
+            if (v.has_mass) {
+                b.mass = BodyMass{v.mass,
+                                  {v.diagonal_inertia[0], v.diagonal_inertia[1], v.diagonal_inertia[2]},
+                                  {v.center_of_mass[0], v.center_of_mass[1], v.center_of_mass[2]},
+                                  {v.principal_axes[0], v.principal_axes[1], v.principal_axes[2], v.principal_axes[3]}};
+            }
+            out.rigid_bodies.push_back(std::move(b));
+        }
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_JOINT); ++i) {
+            TusdJointView v;
+            detail::check(tusd_physics_joint(r.get(), i, &v));
+            Joint j{prim(v.prim), static_cast<JointKind>(v.kind), str(v.type_name), opt(v.rel0), opt(v.rel1),
+                    opt(v.body0), opt(v.body1), v3(v.local_pos0), q4(v.local_rot0), v3(v.local_pos1),
+                    q4(v.local_rot1), v.enabled, v.collision_enabled, v.break_force, v.break_torque,
+                    v.exclude_from_articulation, static_cast<Axis>(v.axis), {}, {}, v.min_distance_enabled,
+                    v.max_distance_enabled};
+            for (std::size_t k = 0; k < v.limit_count; ++k) {
+                const auto& l = v.limits[k];
+                j.limits.push_back({static_cast<Dof>(l.dof), l.enabled, l.lower, l.upper});
+            }
+            for (std::size_t k = 0; k < v.drive_count; ++k) {
+                const auto& d = v.drives[k];
+                j.drives.push_back({static_cast<Dof>(d.dof), d.target_position, d.target_velocity, d.force_limit,
+                                    d.stiffness, d.damping, d.acceleration});
+            }
+            out.joints.push_back(std::move(j));
+        }
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_ARTICULATION); ++i) {
+            TusdArticulationView v;
+            detail::check(tusd_physics_articulation(r.get(), i, &v));
+            Articulation a{prim(v.prim), list(v.roots, v.root_count),
+                           list(v.filtered_collisions, v.filtered_collision_count), list(v.joints, v.joint_count), {}};
+            for (std::size_t k = 0; k < v.body_count; ++k) a.bodies.push_back(opt(v.bodies[k]));
+            out.articulations.push_back(std::move(a));
+        }
+        for (std::size_t i = 0; i < tusd_physics_count(r.get(), TUSD_PHYSICS_KIND_DIAGNOSTIC); ++i) {
+            out.diagnostics.push_back(str(tusd_physics_diagnostic(r.get(), i)));
         }
         return out;
     }

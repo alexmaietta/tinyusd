@@ -230,6 +230,31 @@ int main(int argc, char** argv) {
         CHECK(threw);
     }
 
+    if (tinyusd::has_feature(tinyusd::Feature::Physics)) {
+        auto ps = tinyusd::Stage::open(data + "/physics_full.usda");
+        auto phys = ps.physics();
+        CHECK(phys.meters_per_unit == 0.01 && phys.kilograms_per_unit == 0.001 && !phys.si_units);
+        CHECK(phys.shapes.size() == 8 && phys.rigid_bodies.size() == 6 && phys.joints.size() == 5);
+        CHECK(phys.scenes[0].gravity_direction[1] == -1.0f);
+        const tinyusd::Joint* elbow = nullptr;
+        for (const auto& j : phys.joints)
+            if (j.prim.path() == "/World/Robot/Elbow") elbow = &j;
+        CHECK(elbow && elbow->kind == tinyusd::JointKind::Revolute && elbow->body1->path() == "/World/Robot/Link");
+        CHECK(elbow->limits[0].dof == tinyusd::Dof::RotZ && elbow->drives[0].stiffness == 50.0f);
+        const tinyusd::RigidBody* crate = nullptr;
+        for (const auto& b : phys.rigid_bodies)
+            if (b.prim.path() == "/World/Props/Crate") crate = &b;
+        CHECK(crate && crate->mass && std::abs(crate->mass->mass - 2000.0) < 1e-6);
+        CHECK(phys.articulations[0].roots[0].path() == "/World/Robot/Base");
+        tinyusd::PhysicsOptions si;
+        si.si_units = true;
+        si.include.push_back(*ps.prim("/World/Props"));
+        auto props = ps.physics(si);
+        CHECK(props.si_units && props.rigid_bodies.size() == 4 && props.scenes.empty());
+        for (const auto& b : props.rigid_bodies)
+            if (b.prim.path() == "/World/Props/Crate") CHECK(std::abs(b.mass->mass - 2.0) < 1e-9);
+    }
+
     auto unloaded = tinyusd::Stage::open(data + "/query.usda", {false});
     auto payloaded = *unloaded.prim("/World/Payloaded");
     CHECK(!payloaded.flags().has(tinyusd::PrimFlag::Loaded));

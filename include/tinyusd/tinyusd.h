@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TUSD_ABI_VERSION 6
+#define TUSD_ABI_VERSION 7
 
 typedef enum TusdStatus {
   TUSD_STATUS_OK = 0,
@@ -76,6 +76,57 @@ typedef enum TusdSkinningMethod {
   TUSD_SKINNING_METHOD_DUAL_QUATERNION = 1,
 } TusdSkinningMethod;
 
+typedef enum TusdPhysicsKind {
+  TUSD_PHYSICS_KIND_SCENE = 0,
+  TUSD_PHYSICS_KIND_COLLISION_GROUP = 1,
+  TUSD_PHYSICS_KIND_MATERIAL = 2,
+  TUSD_PHYSICS_KIND_SHAPE = 3,
+  TUSD_PHYSICS_KIND_RIGID_BODY = 4,
+  TUSD_PHYSICS_KIND_JOINT = 5,
+  TUSD_PHYSICS_KIND_ARTICULATION = 6,
+  TUSD_PHYSICS_KIND_DIAGNOSTIC = 7,
+} TusdPhysicsKind;
+
+typedef enum TusdShapeKind {
+  TUSD_SHAPE_KIND_SPHERE = 0,
+  TUSD_SHAPE_KIND_CUBE = 1,
+  TUSD_SHAPE_KIND_CAPSULE = 2,
+  TUSD_SHAPE_KIND_CAPSULE1 = 3,
+  TUSD_SHAPE_KIND_CYLINDER = 4,
+  TUSD_SHAPE_KIND_CYLINDER1 = 5,
+  TUSD_SHAPE_KIND_CONE = 6,
+  TUSD_SHAPE_KIND_PLANE = 7,
+  TUSD_SHAPE_KIND_MESH = 8,
+  TUSD_SHAPE_KIND_SPHERE_POINTS = 9,
+  TUSD_SHAPE_KIND_CUSTOM = 10,
+} TusdShapeKind;
+
+typedef enum TusdAxis {
+  TUSD_AXIS_X = 0,
+  TUSD_AXIS_Y = 1,
+  TUSD_AXIS_Z = 2,
+} TusdAxis;
+
+typedef enum TusdJointKind {
+  TUSD_JOINT_KIND_FIXED = 0,
+  TUSD_JOINT_KIND_REVOLUTE = 1,
+  TUSD_JOINT_KIND_PRISMATIC = 2,
+  TUSD_JOINT_KIND_SPHERICAL = 3,
+  TUSD_JOINT_KIND_DISTANCE = 4,
+  TUSD_JOINT_KIND_D6 = 5,
+  TUSD_JOINT_KIND_CUSTOM = 6,
+} TusdJointKind;
+
+typedef enum TusdDof {
+  TUSD_DOF_DISTANCE = 0,
+  TUSD_DOF_TRANS_X = 1,
+  TUSD_DOF_TRANS_Y = 2,
+  TUSD_DOF_TRANS_Z = 3,
+  TUSD_DOF_ROT_X = 4,
+  TUSD_DOF_ROT_Y = 5,
+  TUSD_DOF_ROT_Z = 6,
+} TusdDof;
+
 typedef enum TusdFeature {
   TUSD_FEATURE_GEOM = (1 << 0),
   TUSD_FEATURE_SHADE = (1 << 1),
@@ -114,6 +165,8 @@ typedef struct TusdBlendShapes TusdBlendShapes;
 typedef struct TusdInstances TusdInstances;
 
 typedef struct TusdOutput TusdOutput;
+
+typedef struct TusdPhysics TusdPhysics;
 
 typedef struct TusdPrimList TusdPrimList;
 
@@ -230,6 +283,150 @@ typedef struct TusdSubShapeView {
   const float *normal_offsets;
   size_t normal_offset_count;
 } TusdSubShapeView;
+
+typedef struct TusdPhysicsOptions {
+  uint32_t struct_size;
+  const TusdPrim *include;
+  size_t include_count;
+  const TusdPrim *exclude;
+  size_t exclude_count;
+  bool compute_mass;
+  bool si_units;
+} TusdPhysicsOptions;
+
+typedef struct TusdPhysicsSceneView {
+  TusdPrim prim;
+  float gravity_direction[3];
+  float gravity_magnitude;
+} TusdPhysicsSceneView;
+
+typedef struct TusdCollisionGroupView {
+  TusdPrim prim;
+  bool invert_filtered_groups;
+  const TusdPrim *filtered_groups;
+  size_t filtered_group_count;
+  const char *merge_group_name;
+  const TusdPrim *merged_groups;
+  size_t merged_group_count;
+} TusdCollisionGroupView;
+
+typedef struct TusdPhysicsMaterialView {
+  TusdPrim prim;
+  float static_friction;
+  float dynamic_friction;
+  float restitution;
+  float density;
+} TusdPhysicsMaterialView;
+
+typedef struct TusdShapeView {
+  TusdPrim prim;
+  TusdPrim rigid_body;
+  float local_pos[3];
+  float local_rot[4];
+  float local_scale[3];
+  const TusdPrim *materials;
+  size_t material_count;
+  const TusdPrim *simulation_owners;
+  size_t simulation_owner_count;
+  const TusdPrim *filtered_collisions;
+  size_t filtered_collision_count;
+  const TusdPrim *collision_groups;
+  size_t collision_group_count;
+  bool collision_enabled;
+  enum TusdShapeKind kind;
+  float radius;
+  float top_radius;
+  float bottom_radius;
+  float half_height;
+  float half_extents[3];
+  enum TusdAxis axis;
+  const char *mesh_approximation;
+  float mesh_scale[3];
+  bool double_sided;
+  const float *sphere_points;
+  size_t sphere_point_count;
+  const char *custom_type;
+} TusdShapeView;
+
+typedef struct TusdRigidBodyView {
+  TusdPrim prim;
+  const TusdPrim *collisions;
+  size_t collision_count;
+  const TusdPrim *filtered_collisions;
+  size_t filtered_collision_count;
+  const TusdPrim *simulation_owners;
+  size_t simulation_owner_count;
+  float position[3];
+  float rotation[4];
+  float scale[3];
+  bool enabled;
+  bool kinematic;
+  bool starts_asleep;
+  float linear_velocity[3];
+  float angular_velocity[3];
+  bool has_mass;
+  double mass;
+  double diagonal_inertia[3];
+  double center_of_mass[3];
+  double principal_axes[4];
+} TusdRigidBodyView;
+
+typedef struct TusdJointLimit {
+  enum TusdDof dof;
+  bool enabled;
+  float lower;
+  float upper;
+} TusdJointLimit;
+
+typedef struct TusdJointDrive {
+  enum TusdDof dof;
+  float target_position;
+  float target_velocity;
+  float force_limit;
+  float stiffness;
+  float damping;
+  bool acceleration;
+} TusdJointDrive;
+
+typedef struct TusdJointView {
+  TusdPrim prim;
+  enum TusdJointKind kind;
+  const char *type_name;
+  TusdPrim rel0;
+  TusdPrim rel1;
+  TusdPrim body0;
+  TusdPrim body1;
+  float local_pos0[3];
+  float local_rot0[4];
+  float local_pos1[3];
+  float local_rot1[4];
+  bool enabled;
+  bool collision_enabled;
+  float break_force;
+  float break_torque;
+  bool exclude_from_articulation;
+  enum TusdAxis axis;
+  const struct TusdJointLimit *limits;
+  size_t limit_count;
+  const struct TusdJointDrive *drives;
+  size_t drive_count;
+  bool min_distance_enabled;
+  bool max_distance_enabled;
+} TusdJointView;
+
+typedef struct TusdArticulationView {
+  TusdPrim prim;
+  const TusdPrim *roots;
+  size_t root_count;
+  const TusdPrim *filtered_collisions;
+  size_t filtered_collision_count;
+  const TusdPrim *joints;
+  size_t joint_count;
+  const TusdPrim *bodies;
+  size_t body_count;
+} TusdArticulationView;
+
+#define TUSD_NO_PRIM UINT32_MAX
 
 #ifdef __cplusplus
 extern "C" {
@@ -544,6 +741,53 @@ enum TusdStatus tusd_prim_skinned_points(struct TusdStage *stage,
                                          const double *time,
                                          struct TusdValue *out_points,
                                          bool *out_found);
+
+struct TusdPhysics *tusd_physics_new(void);
+
+void tusd_physics_free(struct TusdPhysics *physics);
+
+void tusd_physics_options_init(struct TusdPhysicsOptions *options);
+
+enum TusdStatus tusd_stage_physics(struct TusdStage *stage,
+                                   const struct TusdPhysicsOptions *options,
+                                   struct TusdPhysics *out);
+
+enum TusdStatus tusd_physics_units(const struct TusdPhysics *physics,
+                                   double *out_meters_per_unit,
+                                   double *out_kilograms_per_unit,
+                                   bool *out_si_units);
+
+size_t tusd_physics_count(const struct TusdPhysics *physics, enum TusdPhysicsKind kind);
+
+enum TusdStatus tusd_physics_scene(const struct TusdPhysics *physics,
+                                   size_t index,
+                                   struct TusdPhysicsSceneView *out);
+
+enum TusdStatus tusd_physics_collision_group(const struct TusdPhysics *physics,
+                                             size_t index,
+                                             struct TusdCollisionGroupView *out);
+
+enum TusdStatus tusd_physics_material(const struct TusdPhysics *physics,
+                                      size_t index,
+                                      struct TusdPhysicsMaterialView *out);
+
+enum TusdStatus tusd_physics_shape(const struct TusdPhysics *physics,
+                                   size_t index,
+                                   struct TusdShapeView *out);
+
+enum TusdStatus tusd_physics_rigid_body(const struct TusdPhysics *physics,
+                                        size_t index,
+                                        struct TusdRigidBodyView *out);
+
+enum TusdStatus tusd_physics_joint(const struct TusdPhysics *physics,
+                                   size_t index,
+                                   struct TusdJointView *out);
+
+enum TusdStatus tusd_physics_articulation(const struct TusdPhysics *physics,
+                                          size_t index,
+                                          struct TusdArticulationView *out);
+
+const char *tusd_physics_diagnostic(const struct TusdPhysics *physics, size_t index);
 
 #ifdef __cplusplus
 }  // extern "C"

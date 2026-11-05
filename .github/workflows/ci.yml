@@ -75,20 +75,21 @@ jobs:
           python-version: "3.12"
       - run: cargo build -p tinyusd-core --example dump
       - run: pip install usd-core
-      - run: python tests/oracle/compare.py tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
-      - run: python tests/oracle/compare.py --instance-proxies tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
-      - run: python tests/oracle/compare.py --helpers tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+      - run: python tests/oracle/compare.py --schemas tests/data/schemas/demo tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+      - run: python tests/oracle/compare.py --schemas tests/data/schemas/demo --instance-proxies tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+      - run: python tests/oracle/compare.py --schemas tests/data/schemas/demo --helpers tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+      - run: python tests/oracle/compare.py --schemas tests/data/schemas/demo --physics tests/data/physics.usda tests/data/physics_full.usda
       - run: |
           for t in 0 2.5 5 10; do
-            python tests/oracle/compare.py --helpers --time $t tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+            python tests/oracle/compare.py --schemas tests/data/schemas/demo --helpers --time $t tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
           done
       - name: Kitchen Set
         run: |
           curl -sSfL -o kitchen.zip https://openusd.org/files/Kitchen_set.zip
           unzip -q kitchen.zip -d kitchen
-          python tests/oracle/compare.py kitchen/Kitchen_set/Kitchen_set.usd kitchen/Kitchen_set/Kitchen_set_instanced.usd
-          python tests/oracle/compare.py --instance-proxies kitchen/Kitchen_set/Kitchen_set_instanced.usd
-          python tests/oracle/compare.py --helpers kitchen/Kitchen_set/Kitchen_set.usd kitchen/Kitchen_set/Kitchen_set_instanced.usd
+          python tests/oracle/compare.py --schemas tests/data/schemas/demo kitchen/Kitchen_set/Kitchen_set.usd kitchen/Kitchen_set/Kitchen_set_instanced.usd
+          python tests/oracle/compare.py --schemas tests/data/schemas/demo --instance-proxies kitchen/Kitchen_set/Kitchen_set_instanced.usd
+          python tests/oracle/compare.py --schemas tests/data/schemas/demo --helpers kitchen/Kitchen_set/Kitchen_set.usd kitchen/Kitchen_set/Kitchen_set_instanced.usd
 
   fuzz:
     runs-on: ubuntu-latest

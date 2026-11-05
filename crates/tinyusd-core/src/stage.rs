@@ -13,7 +13,8 @@ pub(crate) fn usd_err(e: impl std::fmt::Display) -> Error {
     Error::Usd(e.to_string())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[repr(transparent)]
 pub struct Prim(u32);
 
 impl Prim {
@@ -205,7 +206,7 @@ impl Stage {
         Prim(id)
     }
 
-    fn sdf_path(&self, prim: Prim) -> Result<&sdf::Path> {
+    pub(crate) fn sdf_path(&self, prim: Prim) -> Result<&sdf::Path> {
         self.prims
             .get(prim.0 as usize)
             .map(|(p, _)| p)

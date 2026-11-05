@@ -5,8 +5,9 @@ mod stage;
 mod value;
 
 pub use helpers::{
-    BlendShapes, BoundMaterial, Instances, Interpolation, PrimvarInfo, SkelBinding, SkeletonPose, SkinBinding,
-    SkinningMethod, SubShape,
+    Articulation, Axis, BlendShapes, BodyMass, BoundMaterial, CollisionGroup, Dof, Instances, Interpolation, Joint,
+    JointDrive, JointKind, JointLimit, Physics, PhysicsMaterial, PhysicsOptions, PhysicsScene, PrimvarInfo, RigidBody,
+    Shape, ShapeKind, SkelBinding, SkeletonPose, SkinBinding, SkinningMethod, SubShape,
 };
 pub use host::AssetResolver;
 pub use stage::{AttributeInfo, OpenOptions, Prim, PrimFlags, Specifier, Stage, TraverseFlags};

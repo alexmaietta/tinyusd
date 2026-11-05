@@ -8,7 +8,7 @@ use std::ptr;
 
 use tinyusd_core as core;
 
-pub const TUSD_ABI_VERSION: u32 = 6;
+pub const TUSD_ABI_VERSION: u32 = 7;
 
 pub type TusdPrim = u32;
 
@@ -1770,4 +1770,695 @@ pub unsafe extern "C" fn tusd_prim_skinned_points(
         out.sync();
         Ok(())
     })
+}
+
+pub const TUSD_NO_PRIM: TusdPrim = u32::MAX;
+
+fn prims_ptr(prims: &[core::Prim]) -> *const TusdPrim {
+    prims.as_ptr().cast()
+}
+
+fn opt_prim(p: Option<core::Prim>) -> TusdPrim {
+    p.map_or(TUSD_NO_PRIM, handle)
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdAxis {
+    X = 0,
+    Y = 1,
+    Z = 2,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdShapeKind {
+    Sphere = 0,
+    Cube = 1,
+    Capsule = 2,
+    Capsule1 = 3,
+    Cylinder = 4,
+    Cylinder1 = 5,
+    Cone = 6,
+    Plane = 7,
+    Mesh = 8,
+    SpherePoints = 9,
+    Custom = 10,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdJointKind {
+    Fixed = 0,
+    Revolute = 1,
+    Prismatic = 2,
+    Spherical = 3,
+    Distance = 4,
+    D6 = 5,
+    Custom = 6,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdDof {
+    Distance = 0,
+    TransX = 1,
+    TransY = 2,
+    TransZ = 3,
+    RotX = 4,
+    RotY = 5,
+    RotZ = 6,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdPhysicsKind {
+    Scene = 0,
+    CollisionGroup = 1,
+    Material = 2,
+    Shape = 3,
+    RigidBody = 4,
+    Joint = 5,
+    Articulation = 6,
+    Diagnostic = 7,
+}
+
+fn axis(a: core::Axis) -> TusdAxis {
+    match a {
+        core::Axis::X => TusdAxis::X,
+        core::Axis::Y => TusdAxis::Y,
+        core::Axis::Z => TusdAxis::Z,
+    }
+}
+
+fn dof(d: core::Dof) -> TusdDof {
+    match d {
+        core::Dof::Distance => TusdDof::Distance,
+        core::Dof::TransX => TusdDof::TransX,
+        core::Dof::TransY => TusdDof::TransY,
+        core::Dof::TransZ => TusdDof::TransZ,
+        core::Dof::RotX => TusdDof::RotX,
+        core::Dof::RotY => TusdDof::RotY,
+        core::Dof::RotZ => TusdDof::RotZ,
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdPhysicsOptions {
+    pub struct_size: u32,
+    pub include: *const TusdPrim,
+    pub include_count: usize,
+    pub exclude: *const TusdPrim,
+    pub exclude_count: usize,
+    pub compute_mass: bool,
+    pub si_units: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdPhysicsSceneView {
+    pub prim: TusdPrim,
+    pub gravity_direction: [f32; 3],
+    pub gravity_magnitude: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdCollisionGroupView {
+    pub prim: TusdPrim,
+    pub invert_filtered_groups: bool,
+    pub filtered_groups: *const TusdPrim,
+    pub filtered_group_count: usize,
+    pub merge_group_name: *const c_char,
+    pub merged_groups: *const TusdPrim,
+    pub merged_group_count: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdPhysicsMaterialView {
+    pub prim: TusdPrim,
+    pub static_friction: f32,
+    pub dynamic_friction: f32,
+    pub restitution: f32,
+    pub density: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdShapeView {
+    pub prim: TusdPrim,
+    pub rigid_body: TusdPrim,
+    pub local_pos: [f32; 3],
+    pub local_rot: [f32; 4],
+    pub local_scale: [f32; 3],
+    pub materials: *const TusdPrim,
+    pub material_count: usize,
+    pub simulation_owners: *const TusdPrim,
+    pub simulation_owner_count: usize,
+    pub filtered_collisions: *const TusdPrim,
+    pub filtered_collision_count: usize,
+    pub collision_groups: *const TusdPrim,
+    pub collision_group_count: usize,
+    pub collision_enabled: bool,
+    pub kind: TusdShapeKind,
+    pub radius: f32,
+    pub top_radius: f32,
+    pub bottom_radius: f32,
+    pub half_height: f32,
+    pub half_extents: [f32; 3],
+    pub axis: TusdAxis,
+    pub mesh_approximation: *const c_char,
+    pub mesh_scale: [f32; 3],
+    pub double_sided: bool,
+    pub sphere_points: *const f32,
+    pub sphere_point_count: usize,
+    pub custom_type: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdRigidBodyView {
+    pub prim: TusdPrim,
+    pub collisions: *const TusdPrim,
+    pub collision_count: usize,
+    pub filtered_collisions: *const TusdPrim,
+    pub filtered_collision_count: usize,
+    pub simulation_owners: *const TusdPrim,
+    pub simulation_owner_count: usize,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+    pub enabled: bool,
+    pub kinematic: bool,
+    pub starts_asleep: bool,
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub has_mass: bool,
+    pub mass: f64,
+    pub diagonal_inertia: [f64; 3],
+    pub center_of_mass: [f64; 3],
+    pub principal_axes: [f64; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdJointLimit {
+    pub dof: TusdDof,
+    pub enabled: bool,
+    pub lower: f32,
+    pub upper: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdJointDrive {
+    pub dof: TusdDof,
+    pub target_position: f32,
+    pub target_velocity: f32,
+    pub force_limit: f32,
+    pub stiffness: f32,
+    pub damping: f32,
+    pub acceleration: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdJointView {
+    pub prim: TusdPrim,
+    pub kind: TusdJointKind,
+    pub type_name: *const c_char,
+    pub rel0: TusdPrim,
+    pub rel1: TusdPrim,
+    pub body0: TusdPrim,
+    pub body1: TusdPrim,
+    pub local_pos0: [f32; 3],
+    pub local_rot0: [f32; 4],
+    pub local_pos1: [f32; 3],
+    pub local_rot1: [f32; 4],
+    pub enabled: bool,
+    pub collision_enabled: bool,
+    pub break_force: f32,
+    pub break_torque: f32,
+    pub exclude_from_articulation: bool,
+    pub axis: TusdAxis,
+    pub limits: *const TusdJointLimit,
+    pub limit_count: usize,
+    pub drives: *const TusdJointDrive,
+    pub drive_count: usize,
+    pub min_distance_enabled: bool,
+    pub max_distance_enabled: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdArticulationView {
+    pub prim: TusdPrim,
+    pub roots: *const TusdPrim,
+    pub root_count: usize,
+    pub filtered_collisions: *const TusdPrim,
+    pub filtered_collision_count: usize,
+    pub joints: *const TusdPrim,
+    pub joint_count: usize,
+    pub bodies: *const TusdPrim,
+    pub body_count: usize,
+}
+
+#[derive(Default)]
+pub struct TusdPhysics {
+    physics: core::Physics,
+    strings: Vec<CString>,
+    group_names: Vec<usize>,
+    shape_strings: Vec<(usize, usize)>,
+    joint_types: Vec<usize>,
+    diagnostics: Vec<usize>,
+    limits: Vec<Vec<TusdJointLimit>>,
+    drives: Vec<Vec<TusdJointDrive>>,
+    articulation_bodies: Vec<Vec<TusdPrim>>,
+}
+
+impl TusdPhysics {
+    fn keep(&mut self, s: &str) -> usize {
+        self.strings.push(to_c_string(s));
+        self.strings.len() - 1
+    }
+
+    fn rebuild(&mut self) {
+        self.strings.clear();
+        let names: Vec<String> = self
+            .physics
+            .collision_groups
+            .iter()
+            .map(|g| g.merge_group_name.clone())
+            .collect();
+        self.group_names = names.iter().map(|n| self.keep(n)).collect();
+        let shapes: Vec<(String, String)> = self
+            .physics
+            .shapes
+            .iter()
+            .map(|s| (s.mesh_approximation.clone(), s.custom_type.clone()))
+            .collect();
+        self.shape_strings = shapes.iter().map(|(a, c)| (self.keep(a), self.keep(c))).collect();
+        let types: Vec<String> = self.physics.joints.iter().map(|j| j.type_name.clone()).collect();
+        self.joint_types = types.iter().map(|t| self.keep(t)).collect();
+        let diagnostics = self.physics.diagnostics.clone();
+        self.diagnostics = diagnostics.iter().map(|d| self.keep(d)).collect();
+        self.limits = self
+            .physics
+            .joints
+            .iter()
+            .map(|j| {
+                j.limits
+                    .iter()
+                    .map(|l| TusdJointLimit {
+                        dof: dof(l.dof),
+                        enabled: l.enabled,
+                        lower: l.lower,
+                        upper: l.upper,
+                    })
+                    .collect()
+            })
+            .collect();
+        self.drives = self
+            .physics
+            .joints
+            .iter()
+            .map(|j| {
+                j.drives
+                    .iter()
+                    .map(|d| TusdJointDrive {
+                        dof: dof(d.dof),
+                        target_position: d.target_position,
+                        target_velocity: d.target_velocity,
+                        force_limit: d.force_limit,
+                        stiffness: d.stiffness,
+                        damping: d.damping,
+                        acceleration: d.acceleration,
+                    })
+                    .collect()
+            })
+            .collect();
+        self.articulation_bodies = self
+            .physics
+            .articulations
+            .iter()
+            .map(|a| a.bodies.iter().map(|b| opt_prim(*b)).collect())
+            .collect();
+    }
+
+    fn string(&self, index: usize) -> *const c_char {
+        self.strings.get(index).map_or(ptr::null(), |s| s.as_ptr())
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn tusd_physics_new() -> *mut TusdPhysics {
+    Box::into_raw(Box::default())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_free(physics: *mut TusdPhysics) {
+    if !physics.is_null() {
+        drop(unsafe { Box::from_raw(physics) });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_options_init(options: *mut TusdPhysicsOptions) {
+    if let Some(o) = unsafe { options.as_mut() } {
+        *o = TusdPhysicsOptions {
+            struct_size: size_of::<TusdPhysicsOptions>() as u32,
+            include: ptr::null(),
+            include_count: 0,
+            exclude: ptr::null(),
+            exclude_count: 0,
+            compute_mass: true,
+            si_units: false,
+        };
+    }
+}
+
+unsafe fn prim_slice<'a>(ptr: *const TusdPrim, count: usize, what: &str) -> Result<&'a [TusdPrim], Fail> {
+    if count == 0 {
+        return Ok(&[]);
+    }
+    if ptr.is_null() {
+        return Err(invalid(&format!("{what} must not be null when its count is set")));
+    }
+    Ok(unsafe { std::slice::from_raw_parts(ptr, count) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_stage_physics(
+    stage: *mut TusdStage,
+    options: *const TusdPhysicsOptions,
+    out: *mut TusdPhysics,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let mut opts = core::PhysicsOptions {
+            compute_mass: true,
+            ..core::PhysicsOptions::default()
+        };
+        if let Some(o) = unsafe { options.as_ref() } {
+            if (o.struct_size as usize) < size_of::<TusdPhysicsOptions>() {
+                return Err(invalid(
+                    "options.struct_size is too small; call tusd_physics_options_init",
+                ));
+            }
+            opts.include = unsafe { prim_slice(o.include, o.include_count, "include") }?
+                .iter()
+                .map(|&p| prim(p))
+                .collect();
+            opts.exclude = unsafe { prim_slice(o.exclude, o.exclude_count, "exclude") }?
+                .iter()
+                .map(|&p| prim(p))
+                .collect();
+            opts.compute_mass = o.compute_mass;
+            opts.si_units = o.si_units;
+        }
+        out.physics = s.stage.physics(&opts)?;
+        out.rebuild();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_units(
+    physics: *const TusdPhysics,
+    out_meters_per_unit: *mut f64,
+    out_kilograms_per_unit: *mut f64,
+    out_si_units: *mut bool,
+) -> TusdStatus {
+    guard(|| {
+        let p = unsafe { physics.as_ref() }.ok_or_else(|| invalid("physics must not be null"))?;
+        *unsafe { out_mut(out_meters_per_unit, "out_meters_per_unit") }? = p.physics.meters_per_unit;
+        *unsafe { out_mut(out_kilograms_per_unit, "out_kilograms_per_unit") }? = p.physics.kilograms_per_unit;
+        *unsafe { out_mut(out_si_units, "out_si_units") }? = p.physics.si_units;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_count(physics: *const TusdPhysics, kind: TusdPhysicsKind) -> usize {
+    let Some(p) = (unsafe { physics.as_ref() }) else {
+        return 0;
+    };
+    let p = &p.physics;
+    match kind {
+        TusdPhysicsKind::Scene => p.scenes.len(),
+        TusdPhysicsKind::CollisionGroup => p.collision_groups.len(),
+        TusdPhysicsKind::Material => p.materials.len(),
+        TusdPhysicsKind::Shape => p.shapes.len(),
+        TusdPhysicsKind::RigidBody => p.rigid_bodies.len(),
+        TusdPhysicsKind::Joint => p.joints.len(),
+        TusdPhysicsKind::Articulation => p.articulations.len(),
+        TusdPhysicsKind::Diagnostic => p.diagnostics.len(),
+    }
+}
+
+fn physics_item<'a, T>(
+    physics: *const TusdPhysics,
+    index: usize,
+    pick: impl Fn(&core::Physics) -> &[T],
+) -> Result<(&'a TusdPhysics, &'a T), Fail> {
+    let p = unsafe { physics.as_ref() }.ok_or_else(|| invalid("physics must not be null"))?;
+    let items = pick(&p.physics);
+    let Some(item) = items.get(index) else {
+        set_error(format!("index {index} out of range"));
+        return Err(Fail(TusdStatus::InvalidArgument));
+    };
+    let item: *const T = item;
+    Ok((p, unsafe { &*item }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_scene(
+    physics: *const TusdPhysics,
+    index: usize,
+    out: *mut TusdPhysicsSceneView,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let (_, s) = physics_item(physics, index, |p| &p.scenes)?;
+        *out = TusdPhysicsSceneView {
+            prim: handle(s.prim),
+            gravity_direction: s.gravity_direction,
+            gravity_magnitude: s.gravity_magnitude,
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_collision_group(
+    physics: *const TusdPhysics,
+    index: usize,
+    out: *mut TusdCollisionGroupView,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let (p, g) = physics_item(physics, index, |p| &p.collision_groups)?;
+        *out = TusdCollisionGroupView {
+            prim: handle(g.prim),
+            invert_filtered_groups: g.invert_filtered_groups,
+            filtered_groups: prims_ptr(&g.filtered_groups),
+            filtered_group_count: g.filtered_groups.len(),
+            merge_group_name: p.string(p.group_names[index]),
+            merged_groups: prims_ptr(&g.merged_groups),
+            merged_group_count: g.merged_groups.len(),
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_material(
+    physics: *const TusdPhysics,
+    index: usize,
+    out: *mut TusdPhysicsMaterialView,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let (_, m) = physics_item(physics, index, |p| &p.materials)?;
+        *out = TusdPhysicsMaterialView {
+            prim: handle(m.prim),
+            static_friction: m.static_friction,
+            dynamic_friction: m.dynamic_friction,
+            restitution: m.restitution,
+            density: m.density,
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_shape(
+    physics: *const TusdPhysics,
+    index: usize,
+    out: *mut TusdShapeView,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let (p, s) = physics_item(physics, index, |p| &p.shapes)?;
+        let (approximation, custom) = p.shape_strings[index];
+        *out = TusdShapeView {
+            prim: handle(s.prim),
+            rigid_body: opt_prim(s.rigid_body),
+            local_pos: s.local_pos,
+            local_rot: s.local_rot,
+            local_scale: s.local_scale,
+            materials: prims_ptr(&s.materials),
+            material_count: s.materials.len(),
+            simulation_owners: prims_ptr(&s.simulation_owners),
+            simulation_owner_count: s.simulation_owners.len(),
+            filtered_collisions: prims_ptr(&s.filtered_collisions),
+            filtered_collision_count: s.filtered_collisions.len(),
+            collision_groups: prims_ptr(&s.collision_groups),
+            collision_group_count: s.collision_groups.len(),
+            collision_enabled: s.collision_enabled,
+            kind: match s.kind {
+                core::ShapeKind::Sphere => TusdShapeKind::Sphere,
+                core::ShapeKind::Cube => TusdShapeKind::Cube,
+                core::ShapeKind::Capsule => TusdShapeKind::Capsule,
+                core::ShapeKind::Capsule1 => TusdShapeKind::Capsule1,
+                core::ShapeKind::Cylinder => TusdShapeKind::Cylinder,
+                core::ShapeKind::Cylinder1 => TusdShapeKind::Cylinder1,
+                core::ShapeKind::Cone => TusdShapeKind::Cone,
+                core::ShapeKind::Plane => TusdShapeKind::Plane,
+                core::ShapeKind::Mesh => TusdShapeKind::Mesh,
+                core::ShapeKind::SpherePoints => TusdShapeKind::SpherePoints,
+                core::ShapeKind::Custom => TusdShapeKind::Custom,
+            },
+            radius: s.radius,
+            top_radius: s.top_radius,
+            bottom_radius: s.bottom_radius,
+            half_height: s.half_height,
+            half_extents: s.half_extents,
+            axis: axis(s.axis),
+            mesh_approximation: p.string(approximation),
+            mesh_scale: s.mesh_scale,
+            double_sided: s.double_sided,
+            sphere_points: s.sphere_points.as_ptr().cast(),
+            sphere_point_count: s.sphere_points.len(),
+            custom_type: p.string(custom),
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_rigid_body(
+    physics: *const TusdPhysics,
+    index: usize,
+    out: *mut TusdRigidBodyView,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let (_, b) = physics_item(physics, index, |p| &p.rigid_bodies)?;
+        let mass = b.mass.unwrap_or_default();
+        *out = TusdRigidBodyView {
+            prim: handle(b.prim),
+            collisions: prims_ptr(&b.collisions),
+            collision_count: b.collisions.len(),
+            filtered_collisions: prims_ptr(&b.filtered_collisions),
+            filtered_collision_count: b.filtered_collisions.len(),
+            simulation_owners: prims_ptr(&b.simulation_owners),
+            simulation_owner_count: b.simulation_owners.len(),
+            position: b.position,
+            rotation: b.rotation,
+            scale: b.scale,
+            enabled: b.enabled,
+            kinematic: b.kinematic,
+            starts_asleep: b.starts_asleep,
+            linear_velocity: b.linear_velocity,
+            angular_velocity: b.angular_velocity,
+            has_mass: b.mass.is_some(),
+            mass: mass.mass,
+            diagonal_inertia: mass.diagonal_inertia,
+            center_of_mass: mass.center_of_mass,
+            principal_axes: mass.principal_axes,
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_joint(
+    physics: *const TusdPhysics,
+    index: usize,
+    out: *mut TusdJointView,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let (p, j) = physics_item(physics, index, |p| &p.joints)?;
+        *out = TusdJointView {
+            prim: handle(j.prim),
+            kind: match j.kind {
+                core::JointKind::Fixed => TusdJointKind::Fixed,
+                core::JointKind::Revolute => TusdJointKind::Revolute,
+                core::JointKind::Prismatic => TusdJointKind::Prismatic,
+                core::JointKind::Spherical => TusdJointKind::Spherical,
+                core::JointKind::Distance => TusdJointKind::Distance,
+                core::JointKind::D6 => TusdJointKind::D6,
+                core::JointKind::Custom => TusdJointKind::Custom,
+            },
+            type_name: p.string(p.joint_types[index]),
+            rel0: opt_prim(j.rel0),
+            rel1: opt_prim(j.rel1),
+            body0: opt_prim(j.body0),
+            body1: opt_prim(j.body1),
+            local_pos0: j.local_pos0,
+            local_rot0: j.local_rot0,
+            local_pos1: j.local_pos1,
+            local_rot1: j.local_rot1,
+            enabled: j.enabled,
+            collision_enabled: j.collision_enabled,
+            break_force: j.break_force,
+            break_torque: j.break_torque,
+            exclude_from_articulation: j.exclude_from_articulation,
+            axis: axis(j.axis),
+            limits: p.limits[index].as_ptr(),
+            limit_count: p.limits[index].len(),
+            drives: p.drives[index].as_ptr(),
+            drive_count: p.drives[index].len(),
+            min_distance_enabled: j.min_distance_enabled,
+            max_distance_enabled: j.max_distance_enabled,
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_articulation(
+    physics: *const TusdPhysics,
+    index: usize,
+    out: *mut TusdArticulationView,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let (p, a) = physics_item(physics, index, |p| &p.articulations)?;
+        let bodies = &p.articulation_bodies[index];
+        *out = TusdArticulationView {
+            prim: handle(a.prim),
+            roots: prims_ptr(&a.roots),
+            root_count: a.roots.len(),
+            filtered_collisions: prims_ptr(&a.filtered_collisions),
+            filtered_collision_count: a.filtered_collisions.len(),
+            joints: prims_ptr(&a.joints),
+            joint_count: a.joints.len(),
+            bodies: bodies.as_ptr(),
+            body_count: bodies.len(),
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_physics_diagnostic(physics: *const TusdPhysics, index: usize) -> *const c_char {
+    unsafe { physics.as_ref() }
+        .and_then(|p| p.diagnostics.get(index).map(|&i| p.string(i)))
+        .unwrap_or(ptr::null())
 }

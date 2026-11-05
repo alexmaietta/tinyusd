@@ -38,6 +38,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let proxies = args.iter().any(|a| a == "--instance-proxies");
     let helpers = args.iter().any(|a| a == "--helpers");
+    let physics = args.iter().any(|a| a == "--physics");
     let time: Option<f64> = args
         .iter()
         .position(|a| a == "--time")
@@ -45,7 +46,7 @@ fn main() {
     let path = args
         .iter()
         .enumerate()
-        .find(|&(i, a)| !a.starts_with("--") && (i == 0 || args[i - 1] != "--time"))
+        .find(|&(i, a)| !a.starts_with("--") && (i == 0 || (args[i - 1] != "--time" && args[i - 1] != "--schemas")))
         .map(|(_, a)| a.clone())
         .expect("usage: dump [--instance-proxies] [--helpers] [--time T] <file>");
     let flags = TraverseFlags::INCLUDE_INACTIVE
@@ -57,7 +58,17 @@ fn main() {
         } else {
             TraverseFlags::DEFAULT
         };
-    let mut stage = Stage::open(&path, &OpenOptions::default()).unwrap_or_else(|e| {
+    let schema_paths: Vec<std::path::PathBuf> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i > 0 && args[i - 1] == "--schemas")
+        .map(|(_, a)| a.into())
+        .collect();
+    let options = OpenOptions {
+        schema_paths,
+        ..OpenOptions::default()
+    };
+    let mut stage = Stage::open(&path, &options).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
     });
@@ -207,5 +218,133 @@ fn main() {
             "relationships": relationships,
         }));
     }
-    println!("{}", json!({ "metadata": metadata, "prims": prims }));
+    let physics_json = if physics { dump_physics(&mut stage) } else { Json::Null };
+    println!(
+        "{}",
+        json!({ "metadata": metadata, "prims": prims, "physics": physics_json })
+    );
+}
+
+fn paths(stage: &Stage, prims: &[tinyusd_core::Prim]) -> Vec<String> {
+    prims.iter().map(|&p| stage.path(p).unwrap().to_owned()).collect()
+}
+
+fn opt(stage: &Stage, prim: Option<tinyusd_core::Prim>) -> Json {
+    prim.map_or(Json::Null, |p| json!(stage.path(p).unwrap()))
+}
+
+fn dump_physics(stage: &mut Stage) -> Json {
+    use tinyusd_core::{Axis, PhysicsOptions, ShapeKind};
+    let p = stage
+        .physics(&PhysicsOptions {
+            compute_mass: true,
+            ..PhysicsOptions::default()
+        })
+        .unwrap();
+    let axis = |a: Axis| format!("{a:?}");
+    let mut shapes = Map::new();
+    for s in &p.shapes {
+        let geometry = match s.kind {
+            ShapeKind::Sphere => json!({ "radius": s.radius }),
+            ShapeKind::Cube => json!({ "half_extents": s.half_extents }),
+            ShapeKind::Capsule | ShapeKind::Cylinder | ShapeKind::Cone => {
+                json!({ "radius": s.radius, "half_height": s.half_height, "axis": axis(s.axis) })
+            }
+            ShapeKind::Plane => json!({ "axis": axis(s.axis) }),
+            ShapeKind::Mesh => {
+                json!({ "approximation": s.mesh_approximation, "scale": s.mesh_scale, "double_sided": s.double_sided })
+            }
+            _ => json!({}),
+        };
+        shapes.insert(
+            stage.path(s.prim).unwrap().to_owned(),
+            json!({
+                "kind": format!("{:?}", s.kind),
+                "rigid_body": opt(stage, s.rigid_body),
+                "local_pos": s.local_pos, "local_rot": s.local_rot, "local_scale": s.local_scale,
+                "materials": paths(stage, &s.materials),
+                "filtered_collisions": paths(stage, &s.filtered_collisions),
+                "collision_groups": paths(stage, &s.collision_groups),
+                "collision_enabled": s.collision_enabled,
+                "geometry": geometry,
+            }),
+        );
+    }
+    let mut bodies = Map::new();
+    for b in &p.rigid_bodies {
+        let mass = b.mass.map(|m| {
+            json!({
+                "mass": m.mass, "diagonal_inertia": m.diagonal_inertia,
+                "center_of_mass": m.center_of_mass, "principal_axes": m.principal_axes,
+            })
+        });
+        bodies.insert(
+            stage.path(b.prim).unwrap().to_owned(),
+            json!({
+                "collisions": paths(stage, &b.collisions),
+                "filtered_collisions": paths(stage, &b.filtered_collisions),
+                "position": b.position, "rotation": b.rotation, "scale": b.scale,
+                "enabled": b.enabled, "kinematic": b.kinematic, "starts_asleep": b.starts_asleep,
+                "linear_velocity": b.linear_velocity, "angular_velocity": b.angular_velocity,
+                "mass": mass,
+            }),
+        );
+    }
+    let mut joints = Map::new();
+    for j in &p.joints {
+        let limits: Vec<Json> = j
+            .limits
+            .iter()
+            .map(|l| json!([format!("{:?}", l.dof), l.enabled, l.lower, l.upper]))
+            .collect();
+        let drives: Vec<Json> = j
+            .drives
+            .iter()
+            .map(|d| {
+                json!([
+                    format!("{:?}", d.dof),
+                    d.target_position,
+                    d.target_velocity,
+                    d.force_limit,
+                    d.stiffness,
+                    d.damping,
+                    d.acceleration
+                ])
+            })
+            .collect();
+        joints.insert(
+            stage.path(j.prim).unwrap().to_owned(),
+            json!({
+                "kind": format!("{:?}", j.kind),
+                "body0": opt(stage, j.body0), "body1": opt(stage, j.body1),
+                "rel0": opt(stage, j.rel0), "rel1": opt(stage, j.rel1),
+                "local_pos0": j.local_pos0, "local_rot0": j.local_rot0,
+                "local_pos1": j.local_pos1, "local_rot1": j.local_rot1,
+                "enabled": j.enabled, "collision_enabled": j.collision_enabled,
+                "break_force": j.break_force, "break_torque": j.break_torque,
+                "exclude_from_articulation": j.exclude_from_articulation,
+                "axis": axis(j.axis), "limits": limits, "drives": drives,
+                "min_enabled": j.min_distance_enabled, "max_enabled": j.max_distance_enabled,
+            }),
+        );
+    }
+    json!({
+        "scenes": p.scenes.iter().map(|s| json!({ "path": stage.path(s.prim).unwrap(), "gravity_direction": s.gravity_direction, "gravity_magnitude": s.gravity_magnitude })).collect::<Vec<_>>(),
+        "collision_groups": p.collision_groups.iter().map(|g| json!({
+            "path": stage.path(g.prim).unwrap(), "invert": g.invert_filtered_groups,
+            "filtered": paths(stage, &g.filtered_groups), "merge": g.merge_group_name, "merged": paths(stage, &g.merged_groups),
+        })).collect::<Vec<_>>(),
+        "materials": p.materials.iter().map(|m| json!({
+            "path": stage.path(m.prim).unwrap(), "static_friction": m.static_friction,
+            "dynamic_friction": m.dynamic_friction, "restitution": m.restitution, "density": m.density,
+        })).collect::<Vec<_>>(),
+        "articulations": p.articulations.iter().map(|a| json!({
+            "path": stage.path(a.prim).unwrap(), "roots": paths(stage, &a.roots),
+            "joints": paths(stage, &a.joints),
+            "bodies": a.bodies.iter().map(|b| opt(stage, *b)).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "shapes": shapes,
+        "rigid_bodies": bodies,
+        "joints": joints,
+    })
 }

@@ -6,7 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, UsdSkel
+import warnings
+
+if "--schemas" in sys.argv:
+    schema_dirs = [os.path.abspath(sys.argv[i + 1]) for i, a in enumerate(sys.argv) if a == "--schemas"]
+    os.environ["PXR_PLUGINPATH_NAME"] = os.pathsep.join(schema_dirs + [os.environ.get("PXR_PLUGINPATH_NAME", "")])
+
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdSkel
 
 METADATA_KEYS = ["upAxis", "metersPerUnit", "defaultPrim", "startTimeCode", "endTimeCode", "timeCodesPerSecond"]
 DEFAULT_DUMP = Path(__file__).resolve().parents[2] / "target" / "debug" / "examples" / "dump"
@@ -211,7 +217,190 @@ def resolved(prim, time, xforms, skel_cache):
     }
 
 
-def reference_dump(path, proxies, helpers=False, time=None):
+def fnum(x):
+    x = float(x)
+    return None if math.isinf(x) or math.isnan(x) else x
+
+
+def vec(v):
+    return [fnum(c) for c in v]
+
+
+def quat(q):
+    return [fnum(q.GetReal()), *vec(q.GetImaginary())]
+
+
+def plist(paths):
+    return [str(p) for p in paths]
+
+
+def popt(path):
+    return str(path) if path and not path.isEmpty else None
+
+
+AXIS = {"X": "X", "Y": "Y", "Z": "Z"}
+
+
+def shape_mass(kind, d, prim):
+    if kind == "Sphere":
+        r = d.radius
+        v = 4.0 / 3.0 * math.pi * r**3
+        return v, [0.4 * v * r * r] * 3, [0, 0, 0]
+    if kind == "Cube":
+        a, b, c = d.halfExtents
+        v = 8 * a * b * c
+        return v, [v * (b * b + c * c) / 3, v * (a * a + c * c) / 3, v * (a * a + b * b) / 3], [0, 0, 0]
+    idx = "XYZ".index(str(getattr(d, "axis", "Z")))
+    def along(axial, across):
+        out = [across] * 3
+        out[idx] = axial
+        return out
+    if kind == "Cylinder":
+        r, l = d.radius, 2 * d.halfHeight
+        v = math.pi * r * r * l
+        return v, along(v * r * r / 2, v * (3 * r * r + l * l) / 12), [0, 0, 0]
+    if kind == "Capsule":
+        r, l = d.radius, 2 * d.halfHeight
+        vc, vh = math.pi * r * r * l, 4 / 3 * math.pi * r**3
+        return vc + vh, along(vc * r * r / 2 + vh * 0.4 * r * r, vc * (l * l / 12 + r * r / 4) + vh * (0.4 * r * r + l * l / 4 + 3 * l * r / 8)), [0, 0, 0]
+    if kind == "Cone":
+        r, h = d.radius, 2 * d.halfHeight
+        v = math.pi * r * r * h / 3
+        com = [0, 0, 0]
+        com[idx] = -d.halfHeight / 2
+        return v, along(0.3 * v * r * r, v * (3 * r * r / 20 + 3 * h * h / 80)), com
+    if kind == "Mesh":
+        mesh = UsdGeom.Mesh(prim)
+        pts = [Gf.Vec3d(p[0] * d.meshScale[0], p[1] * d.meshScale[1], p[2] * d.meshScale[2]) for p in mesh.GetPointsAttr().Get()]
+        counts, idxs = mesh.GetFaceVertexCountsAttr().Get(), mesh.GetFaceVertexIndicesAttr().Get()
+        vol, first, cov, start = 0.0, Gf.Vec3d(0), [[0.0] * 3 for _ in range(3)], 0
+        for n in counts:
+            f = idxs[start:start + n]
+            for k in range(1, n - 1):
+                a, b, c = pts[f[0]], pts[f[k]], pts[f[k + 1]]
+                det = a * Gf.Cross(b, c)
+                vol += det / 6
+                sm = a + b + c
+                first += sm * (det / 24)
+                for i in range(3):
+                    for j in range(3):
+                        cov[i][j] += det / 120 * (a[i] * a[j] + b[i] * b[j] + c[i] * c[j] + sm[i] * sm[j])
+            start += n
+        if abs(vol) < 1e-12:
+            return None
+        sign = 1 if vol > 0 else -1
+        vol, first = vol * sign, first * sign
+        com = first / vol
+        cc = [[cov[i][j] * sign - vol * com[i] * com[j] for j in range(3)] for i in range(3)]
+        tr = cc[0][0] + cc[1][1] + cc[2][2]
+        full = [[(tr if i == j else 0) - cc[i][j] for j in range(3)] for i in range(3)]
+        return vol, full, list(com)
+    return None
+
+
+def authored_invert(stage, path, desc):
+    attr = UsdPhysics.CollisionGroup(stage.GetPrimAtPath(path)).GetInvertFilteredGroupsAttr()
+    return desc.invertFilteredGroups if attr and attr.HasAuthoredValue() else False
+
+
+def physics_reference(stage):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
+    T = UsdPhysics.ObjectType
+    by = lambda t: list(zip(*parsed[t])) if t in parsed else []
+    shapes, shape_descs = {}, {}
+    for name in ["Sphere", "Cube", "Capsule", "Cylinder", "Cone", "Plane", "Mesh"]:
+        for path, d in by(getattr(T, name + "Shape")):
+            shape_descs[str(path)] = (name, d)
+            if name == "Sphere":
+                geom = {"radius": fnum(d.radius)}
+            elif name == "Cube":
+                geom = {"half_extents": vec(d.halfExtents)}
+            elif name in ("Capsule", "Cylinder", "Cone"):
+                geom = {"radius": fnum(d.radius), "half_height": fnum(d.halfHeight), "axis": str(d.axis)}
+            elif name == "Plane":
+                geom = {"axis": str(d.axis)}
+            else:
+                geom = {"approximation": str(d.approximation), "scale": vec(d.meshScale), "double_sided": d.doubleSided}
+            shapes[str(path)] = {
+                "kind": name, "rigid_body": popt(d.rigidBody),
+                "local_pos": vec(d.localPos), "local_rot": quat(d.localRot), "local_scale": vec(d.localScale),
+                "materials": plist(d.materials), "filtered_collisions": plist(d.filteredCollisions),
+                "collision_groups": plist(d.collisionGroups), "collision_enabled": d.collisionEnabled, "geometry": geom,
+            }
+    bodies = {}
+    for path, d in by(T.RigidBody):
+        prim = stage.GetPrimAtPath(path)
+
+        def info(collider):
+            entry = shape_descs.get(str(collider.GetPath()))
+            out = UsdPhysics.RigidBodyAPI.MassInformation()
+            computed = shape_mass(entry[0], entry[1], collider) if entry else None
+            if computed is None:
+                out.volume = -1.0
+                return out
+            v, inertia, com = computed
+            if not isinstance(inertia[0], list):
+                inertia = [[inertia[i] if i == j else 0 for j in range(3)] for i in range(3)]
+            out.volume = v
+            out.inertia = Gf.Matrix3f(*[c for row in inertia for c in row])
+            out.centerOfMass = Gf.Vec3f(*com)
+            out.localPos = entry[1].localPos
+            out.localRot = entry[1].localRot
+            return out
+
+        mass, diag, com, axes = UsdPhysics.RigidBodyAPI(prim).ComputeMassProperties(info)
+        if not all(math.isfinite(c) for c in [axes.GetReal(), *axes.GetImaginary()]) or abs(axes.GetLength() - 1) > 1e-3:
+            axes = Gf.Quatf(1, 0, 0, 0)
+        bodies[str(path)] = {
+            "collisions": plist(d.collisions), "filtered_collisions": plist(d.filteredCollisions),
+            "position": vec(d.position), "rotation": quat(d.rotation), "scale": vec(d.scale),
+            "enabled": d.rigidBodyEnabled, "kinematic": d.kinematicBody, "starts_asleep": d.startsAsleep,
+            "linear_velocity": vec(d.linearVelocity), "angular_velocity": vec(d.angularVelocity),
+            "mass": {"mass": fnum(mass), "diagonal_inertia": vec(diag), "center_of_mass": vec(com), "principal_axes": quat(axes)},
+        }
+    joints = {}
+    rot = {"X": "RotX", "Y": "RotY", "Z": "RotZ"}
+    trans = {"X": "TransX", "Y": "TransY", "Z": "TransZ"}
+    lim = lambda dof, l: [dof, l.enabled, fnum(l.lower), fnum(l.upper)]
+    drv = lambda dof, d: [dof, fnum(d.targetPosition), fnum(d.targetVelocity), fnum(d.forceLimit), fnum(d.stiffness), fnum(d.damping), d.acceleration]
+    for kind in ["Fixed", "Revolute", "Prismatic", "Spherical", "Distance", "D6"]:
+        for path, d in by(getattr(T, kind + "Joint")):
+            j = {
+                "kind": kind, "body0": popt(d.body0), "body1": popt(d.body1), "rel0": popt(d.rel0), "rel1": popt(d.rel1),
+                "local_pos0": vec(d.localPose0Position), "local_rot0": quat(d.localPose0Orientation),
+                "local_pos1": vec(d.localPose1Position), "local_rot1": quat(d.localPose1Orientation),
+                "enabled": d.jointEnabled, "collision_enabled": d.collisionEnabled,
+                "break_force": fnum(d.breakForce), "break_torque": fnum(d.breakTorque),
+                "exclude_from_articulation": d.excludeFromArticulation,
+                "axis": str(getattr(d, "axis", "Z")), "limits": [], "drives": [], "min_enabled": False, "max_enabled": False,
+            }
+            if kind in ("Revolute", "Prismatic"):
+                dof = (rot if kind == "Revolute" else trans)[str(d.axis)]
+                j["limits"] = [lim(dof, d.limit)]
+                j["drives"] = [drv(dof, d.drive)] if d.drive.enabled else []
+            elif kind == "Spherical":
+                j["limits"] = [lim(rot[str(d.axis)], d.limit)]
+            elif kind == "Distance":
+                j["limits"] = [lim("Distance", d.limit)]
+                j["min_enabled"], j["max_enabled"] = d.minEnabled, d.maxEnabled
+            elif kind == "D6":
+                j["limits"] = [lim(str(p.first), p.second) for p in d.jointLimits]
+                j["drives"] = [drv(str(p.first), p.second) for p in d.jointDrives]
+            joints[str(path)] = j
+    return {
+        "scenes": [{"path": str(p), "gravity_direction": vec(d.gravityDirection), "gravity_magnitude": fnum(d.gravityMagnitude)} for p, d in by(T.Scene)],
+        "collision_groups": [{"path": str(p), "invert": authored_invert(stage, p, d), "filtered": plist(d.filteredGroups), "merge": d.mergeGroupName, "merged": plist(d.mergedGroups)} for p, d in by(T.CollisionGroup)],
+        "materials": [{"path": str(p), "static_friction": fnum(d.staticFriction), "dynamic_friction": fnum(d.dynamicFriction), "restitution": fnum(d.restitution), "density": fnum(d.density)} for p, d in by(T.RigidBodyMaterial)],
+        "articulations": [{"path": str(p), "roots": plist(d.rootPrims), "joints": plist(d.articulatedJoints), "bodies": [popt(b) for b in d.articulatedBodies]} for p, d in by(T.Articulation)],
+        "shapes": shapes,
+        "rigid_bodies": bodies,
+        "joints": joints,
+    }
+
+
+def reference_dump(path, proxies, helpers=False, time=None, physics=False):
     stage = Usd.Stage.Open(str(path))
     predicate = Usd.TraverseInstanceProxies(Usd.PrimAllPrimsPredicate) if proxies else Usd.PrimAllPrimsPredicate
     layer_md = {}
@@ -253,7 +442,7 @@ def reference_dump(path, proxies, helpers=False, time=None):
                 "relationships": relationships,
             }
         )
-    return {"metadata": layer_md, "prims": prims}
+    return {"metadata": layer_md, "prims": prims, "physics": physics_reference(stage) if physics else None}
 
 
 def same(a, b, rtol, atol, resolved):
@@ -275,8 +464,25 @@ def same(a, b, rtol, atol, resolved):
     return a == b
 
 
+def diff_physics(ours, ref, rtol, atol, errors):
+    for key in ["scenes", "collision_groups", "materials", "articulations"]:
+        if not same(ours[key], ref[key], rtol, atol, True):
+            errors.append(f"physics {key}: {ours[key]} != {ref[key]}")
+    for key in ["shapes", "rigid_bodies", "joints"]:
+        for name in sorted(set(ours[key]) | set(ref[key])):
+            a, b = ours[key].get(name), ref[key].get(name)
+            if a is None or b is None:
+                errors.append(f"physics {key} {name}: {'missing' if a is None else 'unexpected'}")
+                continue
+            for field in sorted(set(a) | set(b)):
+                if not same(a.get(field), b.get(field), rtol, atol, True):
+                    errors.append(f"physics {key} {name}.{field}: {a.get(field)} != {b.get(field)}")
+
+
 def diff(ours, ref, rtol, atol, resolved):
     errors = []
+    if ref.get("physics") is not None:
+        diff_physics(ours["physics"], ref["physics"], rtol, atol, errors)
     for key in sorted(set(ours["metadata"]) | set(ref["metadata"])):
         if not same(ours["metadata"].get(key), ref["metadata"].get(key), rtol, atol, resolved):
             errors.append(f"metadata {key}: {ours['metadata'].get(key)} != {ref['metadata'].get(key)}")
@@ -340,11 +546,16 @@ def main():
     parser.add_argument("--instance-proxies", action="store_true", help="traverse into instance proxies")
     parser.add_argument("--helpers", action="store_true", help="also compare transforms, primvars and materials")
     parser.add_argument("--time", type=float, default=None, help="time code for the helper comparison")
+    parser.add_argument("--physics", action="store_true", help="also compare UsdPhysics parsing and mass properties")
+    parser.add_argument("--schemas", action="append", default=[], help="custom schema folder to register on both sides")
     args = parser.parse_args()
     failed = 0
     for path in args.paths:
         cmd = [str(args.dump), *(["--instance-proxies"] if args.instance_proxies else [])]
         cmd += ["--helpers"] if args.helpers else []
+        cmd += ["--physics"] if args.physics else []
+        for folder in args.schemas:
+            cmd += ["--schemas", folder]
         cmd += ["--time", repr(args.time)] if args.time is not None else []
         cmd.append(str(path))
         run = subprocess.run(cmd, capture_output=True, text=True)
@@ -352,7 +563,7 @@ def main():
             print(f"FAIL {path}\n    tinyusd: {run.stderr.strip()}")
             failed += 1
             continue
-        errors = diff(json.loads(run.stdout), reference_dump(path, args.instance_proxies, args.helpers, args.time), args.rtol, args.atol, not args.no_resolved)
+        errors = diff(json.loads(run.stdout), reference_dump(path, args.instance_proxies, args.helpers, args.time, args.physics), args.rtol, args.atol, not args.no_resolved)
         print(f"{'ok' if not errors else 'FAIL'} {path}")
         for e in errors[: args.max_errors]:
             print(f"    {e}")

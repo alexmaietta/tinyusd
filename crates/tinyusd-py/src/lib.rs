@@ -4,7 +4,7 @@ use numpy::{Element, PyArray1, PyArrayMethods};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyTuple};
+use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use tinyusd_core::{self as core, BaseType, TraverseFlags};
 
 create_exception!(_tinyusd, Error, PyException);
@@ -480,6 +480,28 @@ impl Stage {
                 })
             })
             .collect()
+    }
+
+    #[pyo3(signature = (*, include = None, exclude = None, compute_mass = true, si_units = false))]
+    fn physics<'py>(
+        slf: &Bound<'py, Self>,
+        include: Option<Vec<PyRef<'py, Prim>>>,
+        exclude: Option<Vec<PyRef<'py, Prim>>>,
+        compute_mass: bool,
+        si_units: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let py = slf.py();
+        let own_all = |list: Option<Vec<PyRef<'py, Prim>>>| -> PyResult<Vec<core::Prim>> {
+            list.unwrap_or_default().iter().map(|p| own(slf, p)).collect()
+        };
+        let options = core::PhysicsOptions {
+            include: own_all(include)?,
+            exclude: own_all(exclude)?,
+            compute_mass,
+            si_units,
+        };
+        let phys = slf.borrow_mut().inner.physics(&options).map_err(py_err)?;
+        physics_dict(py, slf, &phys)
     }
 
     fn prototypes(slf: &Bound<'_, Self>) -> PyResult<Vec<Prim>> {
@@ -977,4 +999,175 @@ fn _tinyusd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BlendShapes>()?;
     m.add_function(wrap_pyfunction!(features, m)?)?;
     Ok(())
+}
+
+fn physics_dict<'py>(py: Python<'py>, stage: &Bound<'py, Stage>, p: &core::Physics) -> PyResult<Bound<'py, PyDict>> {
+    let prim = |h: core::Prim| {
+        Py::new(
+            py,
+            Prim {
+                stage: stage.clone().unbind(),
+                handle: h,
+            },
+        )
+    };
+    let opt = |h: Option<core::Prim>| -> PyResult<Option<Py<Prim>>> { h.map(prim).transpose() };
+    let prims = |hs: &[core::Prim]| -> PyResult<Vec<Py<Prim>>> { hs.iter().map(|&h| prim(h)).collect() };
+    let name = |v: &dyn std::fmt::Debug| format!("{v:?}");
+    let out = PyDict::new(py);
+    out.set_item("meters_per_unit", p.meters_per_unit)?;
+    out.set_item("kilograms_per_unit", p.kilograms_per_unit)?;
+    out.set_item("si_units", p.si_units)?;
+    let list = PyList::empty(py);
+    for x in &p.scenes {
+        let d = PyDict::new(py);
+        d.set_item("prim", prim(x.prim)?)?;
+        d.set_item("gravity_direction", x.gravity_direction)?;
+        d.set_item("gravity_magnitude", x.gravity_magnitude)?;
+        list.append(d)?;
+    }
+    out.set_item("scenes", list)?;
+    let list = PyList::empty(py);
+    for x in &p.collision_groups {
+        let d = PyDict::new(py);
+        d.set_item("prim", prim(x.prim)?)?;
+        d.set_item("invert_filtered_groups", x.invert_filtered_groups)?;
+        d.set_item("filtered_groups", prims(&x.filtered_groups)?)?;
+        d.set_item("merge_group_name", &x.merge_group_name)?;
+        d.set_item("merged_groups", prims(&x.merged_groups)?)?;
+        list.append(d)?;
+    }
+    out.set_item("collision_groups", list)?;
+    let list = PyList::empty(py);
+    for x in &p.materials {
+        let d = PyDict::new(py);
+        d.set_item("prim", prim(x.prim)?)?;
+        d.set_item("static_friction", x.static_friction)?;
+        d.set_item("dynamic_friction", x.dynamic_friction)?;
+        d.set_item("restitution", x.restitution)?;
+        d.set_item("density", x.density)?;
+        list.append(d)?;
+    }
+    out.set_item("materials", list)?;
+    let list = PyList::empty(py);
+    for x in &p.shapes {
+        let d = PyDict::new(py);
+        d.set_item("prim", prim(x.prim)?)?;
+        d.set_item("rigid_body", opt(x.rigid_body)?)?;
+        d.set_item("local_pos", x.local_pos)?;
+        d.set_item("local_rot", x.local_rot)?;
+        d.set_item("local_scale", x.local_scale)?;
+        d.set_item("materials", prims(&x.materials)?)?;
+        d.set_item("simulation_owners", prims(&x.simulation_owners)?)?;
+        d.set_item("filtered_collisions", prims(&x.filtered_collisions)?)?;
+        d.set_item("collision_groups", prims(&x.collision_groups)?)?;
+        d.set_item("collision_enabled", x.collision_enabled)?;
+        d.set_item("kind", name(&x.kind))?;
+        d.set_item("radius", x.radius)?;
+        d.set_item("top_radius", x.top_radius)?;
+        d.set_item("bottom_radius", x.bottom_radius)?;
+        d.set_item("half_height", x.half_height)?;
+        d.set_item("half_extents", x.half_extents)?;
+        d.set_item("axis", name(&x.axis))?;
+        d.set_item("mesh_approximation", &x.mesh_approximation)?;
+        d.set_item("mesh_scale", x.mesh_scale)?;
+        d.set_item("double_sided", x.double_sided)?;
+        d.set_item("sphere_points", x.sphere_points.clone())?;
+        d.set_item("custom_type", &x.custom_type)?;
+        list.append(d)?;
+    }
+    out.set_item("shapes", list)?;
+    let list = PyList::empty(py);
+    for x in &p.rigid_bodies {
+        let d = PyDict::new(py);
+        d.set_item("prim", prim(x.prim)?)?;
+        d.set_item("collisions", prims(&x.collisions)?)?;
+        d.set_item("filtered_collisions", prims(&x.filtered_collisions)?)?;
+        d.set_item("simulation_owners", prims(&x.simulation_owners)?)?;
+        d.set_item("position", x.position)?;
+        d.set_item("rotation", x.rotation)?;
+        d.set_item("scale", x.scale)?;
+        d.set_item("enabled", x.enabled)?;
+        d.set_item("kinematic", x.kinematic)?;
+        d.set_item("starts_asleep", x.starts_asleep)?;
+        d.set_item("linear_velocity", x.linear_velocity)?;
+        d.set_item("angular_velocity", x.angular_velocity)?;
+        match &x.mass {
+            Some(m) => {
+                let md = PyDict::new(py);
+                md.set_item("mass", m.mass)?;
+                md.set_item("diagonal_inertia", m.diagonal_inertia)?;
+                md.set_item("center_of_mass", m.center_of_mass)?;
+                md.set_item("principal_axes", m.principal_axes)?;
+                d.set_item("mass", md)?;
+            }
+            None => d.set_item("mass", py.None())?,
+        }
+        list.append(d)?;
+    }
+    out.set_item("rigid_bodies", list)?;
+    let list = PyList::empty(py);
+    for x in &p.joints {
+        let d = PyDict::new(py);
+        d.set_item("prim", prim(x.prim)?)?;
+        d.set_item("kind", name(&x.kind))?;
+        d.set_item("type_name", &x.type_name)?;
+        d.set_item("rel0", opt(x.rel0)?)?;
+        d.set_item("rel1", opt(x.rel1)?)?;
+        d.set_item("body0", opt(x.body0)?)?;
+        d.set_item("body1", opt(x.body1)?)?;
+        d.set_item("local_pos0", x.local_pos0)?;
+        d.set_item("local_rot0", x.local_rot0)?;
+        d.set_item("local_pos1", x.local_pos1)?;
+        d.set_item("local_rot1", x.local_rot1)?;
+        d.set_item("enabled", x.enabled)?;
+        d.set_item("collision_enabled", x.collision_enabled)?;
+        d.set_item("break_force", x.break_force)?;
+        d.set_item("break_torque", x.break_torque)?;
+        d.set_item("exclude_from_articulation", x.exclude_from_articulation)?;
+        d.set_item("axis", name(&x.axis))?;
+        let limits = PyList::empty(py);
+        for l in &x.limits {
+            let ld = PyDict::new(py);
+            ld.set_item("dof", name(&l.dof))?;
+            ld.set_item("enabled", l.enabled)?;
+            ld.set_item("lower", l.lower)?;
+            ld.set_item("upper", l.upper)?;
+            limits.append(ld)?;
+        }
+        d.set_item("limits", limits)?;
+        let drives = PyList::empty(py);
+        for v in &x.drives {
+            let dd = PyDict::new(py);
+            dd.set_item("dof", name(&v.dof))?;
+            dd.set_item("target_position", v.target_position)?;
+            dd.set_item("target_velocity", v.target_velocity)?;
+            dd.set_item("force_limit", v.force_limit)?;
+            dd.set_item("stiffness", v.stiffness)?;
+            dd.set_item("damping", v.damping)?;
+            dd.set_item("acceleration", v.acceleration)?;
+            drives.append(dd)?;
+        }
+        d.set_item("drives", drives)?;
+        d.set_item("min_distance_enabled", x.min_distance_enabled)?;
+        d.set_item("max_distance_enabled", x.max_distance_enabled)?;
+        list.append(d)?;
+    }
+    out.set_item("joints", list)?;
+    let list = PyList::empty(py);
+    for x in &p.articulations {
+        let d = PyDict::new(py);
+        d.set_item("prim", prim(x.prim)?)?;
+        d.set_item("roots", prims(&x.roots)?)?;
+        d.set_item("filtered_collisions", prims(&x.filtered_collisions)?)?;
+        d.set_item("joints", prims(&x.joints)?)?;
+        d.set_item(
+            "bodies",
+            x.bodies.iter().map(|b| opt(*b)).collect::<PyResult<Vec<_>>>()?,
+        )?;
+        list.append(d)?;
+    }
+    out.set_item("articulations", list)?;
+    out.set_item("diagnostics", p.diagnostics.clone())?;
+    Ok(out)
 }

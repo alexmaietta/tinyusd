@@ -195,6 +195,40 @@ for proto, xform in zip(inst.proto_indices, inst.transforms):
     renderer.add_instance(inst.prototypes[proto].path, xform @ world)
 ```
 
+## Physics
+
+`physics(options)` runs UsdPhysics parsing over a stage, the same algorithm and the same descriptors as upstream's `LoadUsdPhysicsFromRange`, and can compute each rigid body's mass properties. Everything comes back as plain data, with prims as handles.
+
+| Part | What you get |
+|---|---|
+| Scenes | gravity direction and magnitude. Unauthored gravity defaults to 9.81 m/s² in stage units, pointing down the stage's up axis |
+| Collision groups | filtered groups, the invert flag, and groups merged through `mergeGroup` |
+| Materials | static and dynamic friction, restitution and density |
+| Shapes | the owning body, the pose in that body's frame, materials, filtered collisions and groups, and the geometry with world scale already folded into its sizes (capsules and cylinders take scale along and across their axis separately). Meshes report their approximation and scale |
+| Rigid bodies | world position and rotation with scale reported separately, velocities, enabled, kinematic and asleep flags, filtered pairs, and optionally mass, principal inertia, center of mass and principal axes |
+| Joints | the kind (fixed, revolute, prismatic, spherical, distance, D6, custom), the authored targets and the bodies they resolve to, both local frames, break force and torque, and limits and drives listed per degree of freedom |
+| Articulations | roots, joints and bodies |
+
+Mass properties follow UsdPhysics's rules (authored mass, inertia and center of mass on the body first, then the colliders' `MassAPI`, density and bound physics material, defaulting to 1000 kg/m³). Each collider's volume and inertia are computed for spheres, cubes, cylinders, capsules, cones, sphere sets and meshes, the last from the mesh's own triangles, so a convex-hull approximation is not applied. Tapered capsules and cylinders, planes and custom shapes are reported in `diagnostics` and count as a unit mass, as upstream does.
+
+Values are in stage units by default, like upstream. Set `si_units` to convert lengths, positions, velocities, masses, inertia, densities, gravity, break forces, linear limits and drive gains to meters and kilograms using `metersPerUnit` and `kilogramsPerUnit`. Angles stay in degrees, as UsdPhysics defines them.
+
+```cpp
+tinyusd::PhysicsOptions options;
+options.si_units = true;
+auto physics = stage.physics(options);
+for (const auto& body : physics.rigid_bodies) {
+    sim.add_body(body.prim.path(), body.position, body.rotation, body.mass->mass, body.mass->diagonal_inertia);
+}
+for (const auto& joint : physics.joints) {
+    sim.add_joint(joint.kind, joint.body0, joint.body1, joint.local_pos0, joint.local_rot0, joint.limits);
+}
+```
+
+In Python, `stage.physics(si_units=True)` returns the same data as dicts and lists.
+
+One known difference from upstream. Upstream's parser reports `invertFilteredGroups` as true for a collision group that does not author it, which contradicts the schema, where inverting is opt-in. tinyusd reports false unless it is authored. Groups that author the flag behave the same in both.
+
 ## Loading from your own file system
 
 By default tinyusd reads files from disk. Engines that keep assets in packed archives, virtual file systems or over the network can supply a resolver instead. It has two jobs:
@@ -247,7 +281,7 @@ auto stage = tinyusd::Stage::open("robot.usd", options);
 stage = tinyusd.Stage.open("robot.usd", schemas=["/path/to/chrono.schema/resources"])
 ```
 
-With a schema registered, `is_a` follows its bases (a typed schema derived from `Xformable` is an `Xformable`), `has_api` knows its API schemas, `get` returns its fallback values where nothing is authored, and `attribute_names` lists its properties. `attribute_info(...).has_authored_value` still tells authored values from fallbacks. Without it, the prims still load and authored values read normally, but the type is unknown to `is_a` and there are no fallbacks. In C, set `schema_paths` and `schema_path_count` in `TusdOpenOptions`; a schema that can't be read fails the open with `TUSD_STATUS_SCHEMA_FAILED`.
+With a schema registered, `is_a` follows its bases (a typed schema derived from `Xformable` is an `Xformable`), `has_api` knows its API schemas, `get` returns its fallback values where nothing is authored, and `attribute_names` lists its properties. `attribute_info(...).has_authored_value` still tells authored values from fallbacks. Without it, the prims still load and authored values read normally, but the type is unknown to `is_a` and there are no fallbacks. Applied API schemas are still reported by `applied_schemas` and `has_api` from their authored names, whereas upstream's `GetAppliedSchemas` leaves out schemas it doesn't know. In C, set `schema_paths` and `schema_path_count` in `TusdOpenOptions`; a schema that can't be read fails the open with `TUSD_STATUS_SCHEMA_FAILED`.
 
 ## Payloads
 
