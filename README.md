@@ -10,6 +10,8 @@ A small, dependency-free OpenUSD reader and writer for C, C++ and Python, writte
 
 tinyusd opens `.usda`, `.usdc` and `.usdz` files, composes them the same way OpenUSD does (sublayers, references, payloads, variants, inherits, specializes, instancing), and lets you query the resulting prims, attributes, relationships, connections, metadata and assets. It does not invent its own scene format. Your importer reads USD data directly and builds whatever structures your engine or simulator needs.
 
+Specifically designed for C and C++ projects such as rendering or physics engines to read and write USD data without the need for a full OpenUSD dependency. For Python, it is probably best to still use `usd-core`.
+
 > **Status:** 0.2.0, early. The query API, the resolution helpers (transforms, primvars, materials, point instancers, skeletons and skinning), host file systems and payload loading are complete and checked against OpenUSD on our fixtures and on Pixar's Kitchen Set. The [write API](#writing) is new. Files it writes are checked against OpenUSD too. See [Roadmap](#roadmap).
 
 ## At a glance
