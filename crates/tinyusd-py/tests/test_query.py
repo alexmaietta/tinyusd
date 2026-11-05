@@ -153,3 +153,44 @@ def test_errors_and_features():
     with pytest.raises(tinyusd.OpenError, match="missing.usda"):
         tinyusd.Stage.open(DATA / "missing.usda")
     assert set(tinyusd.features()) >= {"geom", "shade", "lux", "skel", "physics", "vol", "media", "semantics"}
+
+
+def test_render_helpers():
+    stage = tinyusd.Stage.open(DATA / "render.usda")
+    ball = stage.prim("/World/Props/Animated/Ball")
+    assert ball.visible() and not ball.visible(10)
+    assert stage.prim("/World/Props/Proxy").purpose == "proxy"
+    props = stage.prim("/World/Props")
+    assert props.world_bound().aligned_min == [9, -2, -3]
+    assert props.world_bound(purposes=["default", "proxy"]).aligned_min == [6, -4, -4]
+    with pytest.raises(ValueError):
+        props.world_bound(purposes=["everything"])
+    crate = stage.prim("/World/Props/Crate").local_bound()
+    assert crate.aligned_max == [1, 2, 3] and crate.matrix.shape == (4, 4)
+    shot = stage.prim("/World/Shot").camera()
+    assert shot.projection == "perspective" and (shot.near, shot.far, shot.focal_length) == (0.5, 500, 35)
+    assert shot.projection_matrix.shape == (4, 4) and shot.transform[3][1] == -10
+    assert stage.prim("/World/Top").camera().projection == "orthographic"
+    assert stage.prim("/World").camera() is None
+    if "lux" in tinyusd.features():
+        key = stage.prim("/World/Key").light()
+        assert key.radiance == [40, 20, 10] and key.radius == 0.5 and key.width is None
+        assert stage.prim("/World/Fill").light().color_temperature == 3000
+        assert stage.prim("/World/Sky").light().texture.endswith("tex.png")
+    grid = stage.prim("/World/Grid")
+    subsets = sorted(grid.geom_subsets(), key=lambda g: g.prim.path)
+    assert [(g.prim.name, g.family, list(g.indices)) for g in subsets] == [
+        ("Left", "materialBind", [0, 2]),
+        ("Right", "materialBind", [1, 3]),
+    ]
+    tris = grid.triangulate()
+    assert tris.point_indices.shape == (6, 3) and list(tris.faces) == [0, 0, 2, 3, 3, 3]
+    assert list(stage.prim("/World/Flipped").triangulate().point_indices[0]) == [0, 2, 1]
+    normals = grid.normals()
+    assert not normals.authored and normals.interpolation == "vertex" and list(normals.normals[0]) == [0, 0, 1]
+    assert stage.prim("/World/Normaled").normals().interpolation == "constant"
+    world = stage.prim("/World")
+    assert world.metadata("customData:pipeline:version") == 3
+    assert world.metadata_keys("customData") == ["owner", "pipeline"]
+    assert stage.metadata("customLayerData:tool") == "tinyusd"
+    assert stage.metadata_keys("customLayerData") == ["build", "tool"]

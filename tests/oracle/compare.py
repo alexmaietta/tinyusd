@@ -193,8 +193,45 @@ def instances_info(prim, code):
     return {"prototypes": prototypes, "proto_indices": proto, "ids": ids, "transforms": flat(xforms)}
 
 
+def imageable(prim):
+    while prim and not prim.IsPseudoRoot():
+        if prim.IsA(UsdGeom.Imageable):
+            return UsdGeom.Imageable(prim)
+        prim = prim.GetParent()
+    return None
+
+
+def bound_info(prim, code):
+    bound = UsdGeom.BBoxCache(code, [UsdGeom.Tokens.default_]).ComputeWorldBound(prim)
+    box = bound.ComputeAlignedRange()
+    if box.IsEmpty():
+        return None
+    return {"min": list(box.GetMin()), "max": list(box.GetMax())}
+
+
+def camera_info(prim, code):
+    if not prim.IsA(UsdGeom.Camera):
+        return None
+    camera = UsdGeom.Camera(prim).GetCamera(code)
+    frustum = camera.frustum
+    clip = camera.clippingRange
+    return {
+        "projection": "orthographic" if camera.projection == Gf.Camera.Orthographic else "perspective",
+        "focal_length": camera.focalLength,
+        "horizontal_aperture": camera.horizontalAperture,
+        "vertical_aperture": camera.verticalAperture,
+        "clipping": [clip.min, clip.max],
+        "f_stop": camera.fStop,
+        "focus_distance": camera.focusDistance,
+        "transform": matrix(camera.transform),
+        "projection_matrix": matrix(frustum.ComputeProjectionMatrix()),
+        "view_matrix": matrix(frustum.ComputeViewMatrix()),
+    }
+
+
 def resolved(prim, time, xforms, skel_cache):
     code = Usd.TimeCode.Default() if time is None else Usd.TimeCode(time)
+    image = imageable(prim)
     skin, skinned = skel_info(prim, code, skel_cache)
     local, resets = xforms.GetLocalTransformation(prim)
     primvars = {}
@@ -214,6 +251,10 @@ def resolved(prim, time, xforms, skel_cache):
         material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial(purpose)[0]
         materials[purpose] = str(material.GetPath()) if material else None
     return {
+        "visible": image is None or image.ComputeVisibility(code) != UsdGeom.Tokens.invisible,
+        "purpose": "default" if image is None else str(image.ComputePurpose()),
+        "bound": bound_info(prim, code),
+        "camera": camera_info(prim, code),
         "instances": instances_info(prim, code),
         "skin": skin,
         "skinned_points": skinned,
@@ -453,7 +494,20 @@ def diff(ours, ref, rtol, atol, resolved):
                 errors.append(f"{path} {field}: {op[field]} != {rp[field]}")
         if rp["resolved"] is not None:
             ores, rres = op["resolved"], rp["resolved"]
-            for field in ["world", "local", "resets", "materials", "instances", "skin", "skinned_points", "pose"]:
+            for field in [
+                "world",
+                "local",
+                "resets",
+                "materials",
+                "instances",
+                "skin",
+                "skinned_points",
+                "pose",
+                "visible",
+                "purpose",
+                "bound",
+                "camera",
+            ]:
                 if not same(ores[field], rres[field], rtol, atol, resolved):
                     errors.append(f"{path} {field}: {ores[field]} != {rres[field]}")
             for name in sorted(set(ores["primvars"]) | set(rres["primvars"])):

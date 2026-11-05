@@ -80,6 +80,15 @@ enum class Interpolation : int {
     FaceVarying = TUSD_INTERPOLATION_FACE_VARYING,
 };
 
+enum class Purpose : int {
+    Default = TUSD_PURPOSE_DEFAULT,
+    Render = TUSD_PURPOSE_RENDER,
+    Proxy = TUSD_PURPOSE_PROXY,
+    Guide = TUSD_PURPOSE_GUIDE,
+};
+
+enum class Projection : int { Perspective = TUSD_PROJECTION_PERSPECTIVE, Orthographic = TUSD_PROJECTION_ORTHOGRAPHIC };
+
 enum class Specifier : int { Def = TUSD_SPECIFIER_DEF, Over = TUSD_SPECIFIER_OVER, Class = TUSD_SPECIFIER_CLASS };
 
 enum class ValueType : int {
@@ -554,6 +563,12 @@ struct AttributeInfo {
 
 class Stage;
 struct PrimvarInfo;
+struct Bound;
+struct CameraInfo;
+struct LightInfo;
+struct GeomSubset;
+struct Triangles;
+struct Normals;
 struct LocalTransform;
 struct Instances;
 struct SkeletonPose;
@@ -646,6 +661,27 @@ public:
     inline std::optional<PrimvarInfo> primvar(const std::string& name, Value& out,
                                               std::optional<double> time = std::nullopt) const;
     inline std::optional<Prim> bound_material(const std::string& purpose = "") const;
+    inline bool visible(std::optional<double> time = std::nullopt) const;
+    inline Purpose purpose() const;
+    inline std::optional<Bound> world_bound(std::optional<double> time = std::nullopt,
+                                            const std::vector<Purpose>& purposes = {}) const;
+    inline std::optional<Bound> local_bound(std::optional<double> time = std::nullopt,
+                                            const std::vector<Purpose>& purposes = {}) const;
+    inline std::optional<Bound> untransformed_bound(std::optional<double> time = std::nullopt,
+                                                    const std::vector<Purpose>& purposes = {}) const;
+    inline std::optional<CameraInfo> camera(std::optional<double> time = std::nullopt) const;
+    inline std::optional<LightInfo> light(std::optional<double> time = std::nullopt) const;
+    inline std::vector<GeomSubset> geom_subsets(std::optional<double> time = std::nullopt) const;
+    inline std::optional<Triangles> triangulate(std::optional<double> time = std::nullopt) const;
+    inline std::optional<Normals> normals(std::optional<double> time = std::nullopt) const;
+    std::vector<std::string> metadata_keys(const std::string& key) const {
+        return strings([&](TusdStringList* l) { return tusd_prim_metadata_keys(stage_, handle_, key.c_str(), l); });
+    }
+    std::vector<std::string> attribute_metadata_keys(const std::string& attribute, const std::string& key) const {
+        return strings([&](TusdStringList* l) {
+            return tusd_attribute_metadata_keys(stage_, handle_, attribute.c_str(), key.c_str(), l);
+        });
+    }
     inline std::optional<Instances> instancer_instances(std::optional<double> time = std::nullopt,
                                                         bool include_prototype_transform = true,
                                                         bool apply_visibility = true) const;
@@ -874,6 +910,220 @@ inline std::optional<Prim> Prim::bound_material(const std::string& purpose) cons
     return optional_prim([&](TusdPrim* p, bool* f) {
         return tusd_prim_bound_material(stage_, handle_, purpose.c_str(), p, nullptr, f);
     });
+}
+
+struct Bound {
+    std::array<double, 3> min;
+    std::array<double, 3> max;
+    Matrix4d matrix;
+    std::array<double, 3> aligned_min;
+    std::array<double, 3> aligned_max;
+};
+
+struct CameraInfo {
+    Matrix4d transform;
+    Projection projection;
+    float horizontal_aperture;
+    float vertical_aperture;
+    float horizontal_aperture_offset;
+    float vertical_aperture_offset;
+    float focal_length;
+    float near_distance;
+    float far_distance;
+    std::vector<std::array<float, 4>> clipping_planes;
+    float f_stop;
+    float focus_distance;
+    float exposure_scale;
+    float horizontal_fov;
+    float vertical_fov;
+    Matrix4d view_matrix;
+    Matrix4d projection_matrix;
+};
+
+struct LightInfo {
+    std::string type_name;
+    std::array<float, 3> color;
+    float intensity;
+    float exposure;
+    bool normalize;
+    std::optional<float> color_temperature;
+    std::array<float, 3> radiance;
+    std::optional<float> radius, width, height, length, angle;
+    std::optional<std::string> texture;
+    std::optional<float> cone_angle, cone_softness, focus;
+};
+
+struct GeomSubset {
+    Prim prim;
+    std::string family;
+    std::string element_type;
+    std::vector<std::int32_t> indices;
+};
+
+struct Triangles {
+    std::vector<std::array<std::int32_t, 3>> point_indices;
+    std::vector<std::array<std::int32_t, 3>> corner_indices;
+    std::vector<std::int32_t> faces;
+};
+
+struct Normals {
+    std::vector<std::array<float, 3>> normals;
+    Interpolation interpolation;
+    bool authored;
+};
+
+namespace detail {
+template <std::size_t N>
+std::array<double, N> to_array(const double (&v)[N]) {
+    std::array<double, N> out{};
+    for (std::size_t i = 0; i < N; ++i) out[i] = v[i];
+    return out;
+}
+template <std::size_t N>
+std::array<float, N> to_array(const float (&v)[N]) {
+    std::array<float, N> out{};
+    for (std::size_t i = 0; i < N; ++i) out[i] = v[i];
+    return out;
+}
+inline std::optional<float> present(float v) {
+    if (v != v) return std::nullopt;
+    return v;
+}
+inline std::uint32_t purpose_bits(const std::vector<Purpose>& purposes) {
+    std::uint32_t bits = 0;
+    for (auto p : purposes) bits |= 1u << static_cast<std::uint32_t>(p);
+    return bits;
+}
+}
+
+inline bool Prim::visible(std::optional<double> time) const {
+    bool out = true;
+    const double t = time.value_or(0.0);
+    detail::check(tusd_prim_visible(stage_, handle_, time ? &t : nullptr, &out));
+    return out;
+}
+
+inline Purpose Prim::purpose() const {
+    TusdPurpose p = TUSD_PURPOSE_DEFAULT;
+    detail::check(tusd_prim_purpose(stage_, handle_, &p));
+    return static_cast<Purpose>(p);
+}
+
+namespace detail {
+inline std::optional<Bound> bound(TusdStage* stage, TusdPrim prim, TusdBoundSpace space, std::optional<double> time,
+                                  const std::vector<Purpose>& purposes) {
+    TusdBound b;
+    bool found = false;
+    const double t = time.value_or(0.0);
+    check(tusd_prim_bound(stage, prim, static_cast<std::uint32_t>(space), time ? &t : nullptr, purpose_bits(purposes),
+                          &b, &found));
+    if (!found) return std::nullopt;
+    return Bound{to_array(b.min), to_array(b.max), to_array(b.matrix), to_array(b.aligned_min),
+                 to_array(b.aligned_max)};
+}
+}
+
+inline std::optional<Bound> Prim::world_bound(std::optional<double> time, const std::vector<Purpose>& purposes) const {
+    return detail::bound(stage_, handle_, TUSD_BOUND_SPACE_WORLD, time, purposes);
+}
+
+inline std::optional<Bound> Prim::local_bound(std::optional<double> time, const std::vector<Purpose>& purposes) const {
+    return detail::bound(stage_, handle_, TUSD_BOUND_SPACE_LOCAL, time, purposes);
+}
+
+inline std::optional<Bound> Prim::untransformed_bound(std::optional<double> time,
+                                                      const std::vector<Purpose>& purposes) const {
+    return detail::bound(stage_, handle_, TUSD_BOUND_SPACE_UNTRANSFORMED, time, purposes);
+}
+
+inline std::optional<CameraInfo> Prim::camera(std::optional<double> time) const {
+    TusdCameraInfo c;
+    bool found = false;
+    const double t = time.value_or(0.0);
+    detail::check(tusd_prim_camera(stage_, handle_, time ? &t : nullptr, &c, &found));
+    if (!found) return std::nullopt;
+    CameraInfo out{detail::to_array(c.transform), static_cast<Projection>(c.projection), c.horizontal_aperture,
+                   c.vertical_aperture, c.horizontal_aperture_offset, c.vertical_aperture_offset, c.focal_length,
+                   c.near, c.far, {}, c.f_stop, c.focus_distance, c.exposure_scale, c.horizontal_fov,
+                   c.vertical_fov, detail::to_array(c.view_matrix), detail::to_array(c.projection_matrix)};
+    for (std::size_t i = 0; i < c.clipping_plane_count; ++i) {
+        const float* p = c.clipping_planes + 4 * i;
+        out.clipping_planes.push_back({p[0], p[1], p[2], p[3]});
+    }
+    return out;
+}
+
+inline std::optional<LightInfo> Prim::light(std::optional<double> time) const {
+    TusdLightInfo l;
+    bool found = false;
+    const double t = time.value_or(0.0);
+    detail::check(tusd_prim_light(stage_, handle_, time ? &t : nullptr, &l, &found));
+    if (!found) return std::nullopt;
+    LightInfo out{l.type_name ? l.type_name : "",
+                  detail::to_array(l.color),
+                  l.intensity,
+                  l.exposure,
+                  l.normalize,
+                  detail::present(l.color_temperature),
+                  detail::to_array(l.radiance),
+                  detail::present(l.radius),
+                  detail::present(l.width),
+                  detail::present(l.height),
+                  detail::present(l.length),
+                  detail::present(l.angle),
+                  std::nullopt,
+                  detail::present(l.cone_angle),
+                  detail::present(l.cone_softness),
+                  detail::present(l.focus)};
+    if (l.texture) out.texture = std::string(l.texture);
+    return out;
+}
+
+inline std::vector<GeomSubset> Prim::geom_subsets(std::optional<double> time) const {
+    const double t = time.value_or(0.0);
+    auto subsets = prims([&](TusdPrimList* l) { return tusd_prim_geom_subsets(stage_, handle_, time ? &t : nullptr, l); });
+    std::vector<GeomSubset> out;
+    Value v;
+    for (const auto& s : subsets) {
+        GeomSubset g{s, {}, "face", {}};
+        if (s.get("familyName", v)) g.family = std::string(v.string());
+        if (s.get("elementType", v)) g.element_type = std::string(v.string());
+        if (s.get("indices", v, time)) {
+            auto span = v.as_span<std::int32_t>();
+            g.indices.assign(span.begin(), span.end());
+        }
+        out.push_back(std::move(g));
+    }
+    return out;
+}
+
+inline std::optional<Triangles> Prim::triangulate(std::optional<double> time) const {
+    Value points, corners, faces;
+    bool found = false;
+    const double t = time.value_or(0.0);
+    detail::check(tusd_prim_triangulate(stage_, handle_, time ? &t : nullptr, points.raw(), corners.raw(),
+                                        faces.raw(), &found));
+    if (!found) return std::nullopt;
+    Triangles out;
+    auto p = points.as_span<std::array<std::int32_t, 3>>();
+    auto c = corners.as_span<std::array<std::int32_t, 3>>();
+    auto f = faces.as_span<std::int32_t>();
+    out.point_indices.assign(p.begin(), p.end());
+    out.corner_indices.assign(c.begin(), c.end());
+    out.faces.assign(f.begin(), f.end());
+    return out;
+}
+
+inline std::optional<Normals> Prim::normals(std::optional<double> time) const {
+    Value v;
+    TusdInterpolation interpolation = TUSD_INTERPOLATION_VERTEX;
+    bool authored = false, found = false;
+    const double t = time.value_or(0.0);
+    detail::check(tusd_prim_normals(stage_, handle_, time ? &t : nullptr, v.raw(), &interpolation, &authored, &found));
+    if (!found) return std::nullopt;
+    auto n = v.as_span<std::array<float, 3>>();
+    return Normals{std::vector<std::array<float, 3>>(n.begin(), n.end()), static_cast<Interpolation>(interpolation),
+                   authored};
 }
 
 struct Instances {
@@ -1570,6 +1820,11 @@ public:
         bool found = false;
         detail::check(tusd_stage_metadata(stage_.get(), key.c_str(), out.raw(), &found));
         return found;
+    }
+
+    std::vector<std::string> metadata_keys(const std::string& key) const {
+        return pseudo_root().strings(
+            [&](TusdStringList* l) { return tusd_stage_metadata_keys(stage_.get(), key.c_str(), l); });
     }
 
     bool has_authored_metadata(const std::string& key) const {

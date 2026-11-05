@@ -346,6 +346,7 @@ pub struct TusdStage {
     stage: core::Stage,
     paths: Vec<Option<CString>>,
     interned: HashMap<String, CString>,
+    planes: Vec<[f32; 4]>,
 }
 
 impl TusdStage {
@@ -600,6 +601,7 @@ fn wrap_stage(stage: core::Stage) -> *mut TusdStage {
         stage,
         paths: Vec::new(),
         interned: HashMap::new(),
+        planes: Vec::new(),
     }))
 }
 
@@ -2595,6 +2597,379 @@ pub unsafe extern "C" fn tusd_prim_mass_properties(
             center_of_mass: m.center_of_mass,
             principal_axes: m.principal_axes,
         };
+        Ok(())
+    })
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdPurpose {
+    Default = 0,
+    Render = 1,
+    Proxy = 2,
+    Guide = 3,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdBoundSpace {
+    World = 0,
+    Local = 1,
+    Untransformed = 2,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdBound {
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+    pub matrix: [f64; 16],
+    pub aligned_min: [f64; 3],
+    pub aligned_max: [f64; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TusdProjection {
+    Perspective = 0,
+    Orthographic = 1,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdCameraInfo {
+    pub transform: [f64; 16],
+    pub projection: TusdProjection,
+    pub horizontal_aperture: f32,
+    pub vertical_aperture: f32,
+    pub horizontal_aperture_offset: f32,
+    pub vertical_aperture_offset: f32,
+    pub focal_length: f32,
+    pub near: f32,
+    pub far: f32,
+    pub clipping_planes: *const f32,
+    pub clipping_plane_count: usize,
+    pub f_stop: f32,
+    pub focus_distance: f32,
+    pub exposure_scale: f32,
+    pub horizontal_fov: f32,
+    pub vertical_fov: f32,
+    pub view_matrix: [f64; 16],
+    pub projection_matrix: [f64; 16],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TusdLightInfo {
+    pub type_name: *const c_char,
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub exposure: f32,
+    pub normalize: bool,
+    pub color_temperature: f32,
+    pub radiance: [f32; 3],
+    pub radius: f32,
+    pub width: f32,
+    pub height: f32,
+    pub length: f32,
+    pub angle: f32,
+    pub texture: *const c_char,
+    pub cone_angle: f32,
+    pub cone_softness: f32,
+    pub focus: f32,
+}
+
+fn purposes(bits: u32) -> Vec<core::Purpose> {
+    [
+        core::Purpose::Default,
+        core::Purpose::Render,
+        core::Purpose::Proxy,
+        core::Purpose::Guide,
+    ]
+    .into_iter()
+    .filter(|p| bits & (1 << *p as u32) != 0)
+    .collect()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_visible(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    time: *const f64,
+    out_visible: *mut bool,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out_visible, "out_visible") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        *out = s.stage.visible(prim(p), unsafe { time_arg(time) })?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_purpose(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    out_purpose: *mut TusdPurpose,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out_purpose, "out_purpose") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        *out = match s.stage.purpose(prim(p))? {
+            core::Purpose::Default => TusdPurpose::Default,
+            core::Purpose::Render => TusdPurpose::Render,
+            core::Purpose::Proxy => TusdPurpose::Proxy,
+            core::Purpose::Guide => TusdPurpose::Guide,
+        };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_bound(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    space: u32,
+    time: *const f64,
+    purpose_bits: u32,
+    out_bound: *mut TusdBound,
+    out_found: *mut bool,
+) -> TusdStatus {
+    guard(|| {
+        let outs = unsafe { opt_outs(out_found, out_bound) }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let (t, ps) = (unsafe { time_arg(time) }, purposes(purpose_bits));
+        let b = match space {
+            0 => s.stage.world_bound(prim(p), t, &ps)?,
+            1 => s.stage.local_bound(prim(p), t, &ps)?,
+            2 => s.stage.untransformed_bound(prim(p), t, &ps)?,
+            other => return Err(invalid(&format!("{other} is not a TusdBoundSpace"))),
+        };
+        write_opt(
+            outs,
+            b.map(|b| TusdBound {
+                min: b.min,
+                max: b.max,
+                matrix: b.matrix,
+                aligned_min: b.aligned_min,
+                aligned_max: b.aligned_max,
+            }),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_camera(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    time: *const f64,
+    out_camera: *mut TusdCameraInfo,
+    out_found: *mut bool,
+) -> TusdStatus {
+    guard(|| {
+        let outs = unsafe { opt_outs(out_found, out_camera) }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let Some(c) = s.stage.camera(prim(p), unsafe { time_arg(time) })? else {
+            return write_opt(outs, None);
+        };
+        s.planes = c.clipping_planes.clone();
+        let info = TusdCameraInfo {
+            transform: c.transform,
+            projection: match c.projection {
+                core::Projection::Perspective => TusdProjection::Perspective,
+                core::Projection::Orthographic => TusdProjection::Orthographic,
+            },
+            horizontal_aperture: c.horizontal_aperture,
+            vertical_aperture: c.vertical_aperture,
+            horizontal_aperture_offset: c.horizontal_aperture_offset,
+            vertical_aperture_offset: c.vertical_aperture_offset,
+            focal_length: c.focal_length,
+            near: c.near,
+            far: c.far,
+            clipping_planes: if s.planes.is_empty() {
+                ptr::null()
+            } else {
+                s.planes.as_ptr().cast()
+            },
+            clipping_plane_count: s.planes.len(),
+            f_stop: c.f_stop,
+            focus_distance: c.focus_distance,
+            exposure_scale: c.exposure_scale,
+            horizontal_fov: c.horizontal_fov,
+            vertical_fov: c.vertical_fov,
+            view_matrix: c.view_matrix,
+            projection_matrix: c.projection_matrix,
+        };
+        write_opt(outs, Some(info))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_light(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    time: *const f64,
+    out_light: *mut TusdLightInfo,
+    out_found: *mut bool,
+) -> TusdStatus {
+    guard(|| {
+        let outs = unsafe { opt_outs(out_found, out_light) }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let Some(l) = s.stage.light(prim(p), unsafe { time_arg(time) })? else {
+            return write_opt(outs, None);
+        };
+        let nan = |v: Option<f32>| v.unwrap_or(f32::NAN);
+        let info = TusdLightInfo {
+            type_name: s.intern(&l.type_name),
+            color: l.color,
+            intensity: l.intensity,
+            exposure: l.exposure,
+            normalize: l.normalize,
+            color_temperature: nan(l.color_temperature),
+            radiance: l.radiance,
+            radius: nan(l.radius),
+            width: nan(l.width),
+            height: nan(l.height),
+            length: nan(l.length),
+            angle: nan(l.angle),
+            texture: l.texture.as_ref().map_or(ptr::null(), |t| s.intern(t)),
+            cone_angle: nan(l.cone_angle),
+            cone_softness: nan(l.cone_softness),
+            focus: nan(l.focus),
+        };
+        write_opt(outs, Some(info))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_geom_subsets(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    time: *const f64,
+    out: *mut TusdPrimList,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let subsets = s.stage.geom_subsets(prim(p), unsafe { time_arg(time) })?;
+        out.prims = subsets.iter().map(|x| handle(x.prim)).collect();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_triangulate(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    time: *const f64,
+    out_point_indices: *mut TusdValue,
+    out_corner_indices: *mut TusdValue,
+    out_faces: *mut TusdValue,
+    out_found: *mut bool,
+) -> TusdStatus {
+    guard(|| {
+        let found = unsafe { out_mut(out_found, "out_found") }?;
+        let points = unsafe { out_mut(out_point_indices, "out_point_indices") }?;
+        let corners = unsafe { out_mut(out_corner_indices, "out_corner_indices") }?;
+        let faces = unsafe { out_mut(out_faces, "out_faces") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let t = s.stage.triangulate(prim(p), unsafe { time_arg(time) })?;
+        *found = t.is_some();
+        let t = t.unwrap_or_default();
+        points.value = core::Value::from_slice(core::BaseType::Int3, true, &t.point_indices)?;
+        corners.value = core::Value::from_slice(core::BaseType::Int3, true, &t.corner_indices)?;
+        faces.value = core::Value::from_slice(core::BaseType::Int, true, &t.faces)?;
+        for v in [points, corners, faces] {
+            v.sync();
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_normals(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    time: *const f64,
+    out_normals: *mut TusdValue,
+    out_interpolation: *mut TusdInterpolation,
+    out_authored: *mut bool,
+    out_found: *mut bool,
+) -> TusdStatus {
+    guard(|| {
+        let found = unsafe { out_mut(out_found, "out_found") }?;
+        let v = unsafe { out_mut(out_normals, "out_normals") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let n = s.stage.mesh_normals(prim(p), unsafe { time_arg(time) })?;
+        *found = n.is_some();
+        let Some(n) = n else {
+            v.value = core::Value::new();
+            v.sync();
+            return Ok(());
+        };
+        v.value = core::Value::from_slice(core::BaseType::Float3, true, &n.normals)?;
+        v.sync();
+        if let Some(out) = unsafe { out_interpolation.as_mut() } {
+            *out = match n.interpolation {
+                core::Interpolation::Constant => TusdInterpolation::Constant,
+                core::Interpolation::Uniform => TusdInterpolation::Uniform,
+                core::Interpolation::Varying => TusdInterpolation::Varying,
+                core::Interpolation::Vertex => TusdInterpolation::Vertex,
+                core::Interpolation::FaceVarying => TusdInterpolation::FaceVarying,
+            };
+        }
+        if let Some(out) = unsafe { out_authored.as_mut() } {
+            *out = n.authored;
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_metadata_keys(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    key: *const c_char,
+    out: *mut TusdStringList,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        out.set(s.stage.prim_metadata_keys(prim(p), unsafe { str_arg(key, "key") }?)?);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_attribute_metadata_keys(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    name: *const c_char,
+    key: *const c_char,
+    out: *mut TusdStringList,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let name = unsafe { str_arg(name, "name") }?;
+        out.set(
+            s.stage
+                .attribute_metadata_keys(prim(p), name, unsafe { str_arg(key, "key") }?)?,
+        );
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_stage_metadata_keys(
+    stage: *mut TusdStage,
+    key: *const c_char,
+    out: *mut TusdStringList,
+) -> TusdStatus {
+    guard(|| {
+        let out = unsafe { out_mut(out, "out") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        out.set(s.stage.stage_metadata_keys(unsafe { str_arg(key, "key") }?)?);
         Ok(())
     })
 }

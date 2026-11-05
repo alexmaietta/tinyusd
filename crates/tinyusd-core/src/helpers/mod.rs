@@ -1,12 +1,18 @@
+mod camera;
+mod imageable;
 mod instancer;
 mod material;
+mod mesh;
 pub(crate) mod physics;
 mod primvar;
 mod skel;
 mod xform;
 
+pub use camera::{CameraInfo, LightInfo, Projection};
+pub use imageable::{Bound, Purpose};
 pub use instancer::Instances;
 pub use material::BoundMaterial;
+pub use mesh::{GeomSubset, Normals, Triangles};
 #[cfg(feature = "write")]
 pub use physics::write::PhysicsWriteOptions;
 pub use physics::{
@@ -19,6 +25,7 @@ pub use skel::{BlendShapes, SkelBinding, SkeletonPose, SkinBinding, SkinningMeth
 #[derive(Default)]
 pub(crate) struct Caches {
     pub(crate) xforms: xform::XformCaches,
+    pub(crate) bounds: imageable::BoundCaches,
     #[cfg(feature = "shade")]
     pub(crate) materials: material::MaterialCaches,
     #[cfg(feature = "skel")]

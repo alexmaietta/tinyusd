@@ -198,7 +198,29 @@ fn main() {
             } else {
                 None
             };
+            let bound = stage
+                .world_bound(prim, time, &[])
+                .unwrap()
+                .map(|b| json!({ "min": b.aligned_min, "max": b.aligned_max }));
+            let camera = stage.camera(prim, time).unwrap().map(|c| {
+                json!({
+                    "projection": format!("{:?}", c.projection).to_lowercase(),
+                    "focal_length": c.focal_length,
+                    "horizontal_aperture": c.horizontal_aperture,
+                    "vertical_aperture": c.vertical_aperture,
+                    "clipping": [c.near, c.far],
+                    "f_stop": c.f_stop,
+                    "focus_distance": c.focus_distance,
+                    "transform": c.transform,
+                    "projection_matrix": c.projection_matrix,
+                    "view_matrix": c.view_matrix,
+                })
+            });
             resolved = json!({
+                "visible": stage.visible(prim, time).unwrap(),
+                "purpose": format!("{:?}", stage.purpose(prim).unwrap()).to_lowercase(),
+                "bound": bound,
+                "camera": camera,
                 "instances": instances,
                 "skin": skin,
                 "skinned_points": skinned,

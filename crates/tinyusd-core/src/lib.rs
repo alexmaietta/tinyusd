@@ -11,9 +11,10 @@ pub use author::LayerFormat;
 #[cfg(feature = "write")]
 pub use helpers::PhysicsWriteOptions;
 pub use helpers::{
-    Articulation, Axis, BlendShapes, BodyMass, BoundMaterial, CollisionGroup, Dof, Instances, Interpolation, Joint,
-    JointDrive, JointKind, JointLimit, MassInformation, Physics, PhysicsMaterial, PhysicsOptions, PhysicsScene,
-    PrimvarInfo, RigidBody, Shape, ShapeKind, SkelBinding, SkeletonPose, SkinBinding, SkinningMethod, SubShape,
+    Articulation, Axis, BlendShapes, BodyMass, Bound, BoundMaterial, CameraInfo, CollisionGroup, Dof, GeomSubset,
+    Instances, Interpolation, Joint, JointDrive, JointKind, JointLimit, LightInfo, MassInformation, Normals, Physics,
+    PhysicsMaterial, PhysicsOptions, PhysicsScene, PrimvarInfo, Projection, Purpose, RigidBody, Shape, ShapeKind,
+    SkelBinding, SkeletonPose, SkinBinding, SkinningMethod, SubShape, Triangles,
 };
 pub use host::AssetResolver;
 pub use stage::{AttributeInfo, OpenOptions, Prim, PrimFlags, Specifier, Stage, TraverseFlags};

@@ -323,6 +323,41 @@ int main(int argc, char** argv) {
     }
     CHECK(threw);
 
+    {
+        auto render = tinyusd::Stage::open(data + "/render.usda");
+        auto ball = render.prim("/World/Props/Animated/Ball");
+        CHECK(ball->visible() && !ball->visible(10.0));
+        CHECK(render.prim("/World/Props/Guides/Helper")->purpose() == tinyusd::Purpose::Guide);
+        auto props = render.prim("/World/Props");
+        CHECK(props->world_bound()->aligned_min[0] == 9.0);
+        CHECK(props->world_bound(std::nullopt, {tinyusd::Purpose::Default, tinyusd::Purpose::Proxy})->aligned_min[0] == 6.0);
+        CHECK(render.prim("/World/Props/Crate")->local_bound()->aligned_max[1] == 2.0);
+        auto shot = render.prim("/World/Shot")->camera();
+        CHECK(shot && shot->focal_length == 35.0f && shot->near_distance == 0.5f && shot->clipping_planes.empty());
+        CHECK(render.prim("/World/Top")->camera()->projection == tinyusd::Projection::Orthographic);
+        CHECK(!render.prim("/World")->camera());
+        if (tinyusd::has_feature(tinyusd::Feature::Lux)) {
+            auto key = render.prim("/World/Key")->light();
+            CHECK(key && key->radiance[1] == 20.0f && key->radius == 0.5f && !key->width && key->cone_angle == 45.0f);
+            auto fill = render.prim("/World/Fill")->light();
+            CHECK(fill->color_temperature == 3000.0f && fill->radiance[0] > fill->radiance[2]);
+            CHECK(render.prim("/World/Sky")->light()->texture);
+        }
+        auto grid = render.prim("/World/Grid");
+        auto subsets = grid->geom_subsets();
+        CHECK(subsets.size() == 2 && subsets[0].family == "materialBind" && subsets[0].element_type == "face");
+        auto tris = grid->triangulate();
+        CHECK(tris && tris->faces.size() == 6 && tris->point_indices[1] == (std::array<std::int32_t, 3>{0, 4, 3}));
+        CHECK(render.prim("/World/Flipped")->normals()->normals[0][2] == -1.0f);
+        auto authored = render.prim("/World/Normaled")->normals();
+        CHECK(authored->authored && authored->interpolation == tinyusd::Interpolation::Constant);
+        auto world = render.prim("/World");
+        tinyusd::Value meta;
+        CHECK(world->metadata("customData:pipeline:stage", meta) && meta.string() == "layout");
+        CHECK(world->metadata_keys("customData:pipeline") == (std::vector<std::string>{"stage", "version"}));
+        CHECK(render.metadata_keys("customLayerData") == (std::vector<std::string>{"build", "tool"}));
+    }
+
     std::puts("ok");
     return 0;
 }

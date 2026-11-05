@@ -146,6 +146,55 @@ int main(int argc, char** argv) {
     options.struct_size = 1;
     CHECK(tusd_stage_open(path, &options, &stage) == TUSD_STATUS_INVALID_ARGUMENT && stage == NULL);
 
+    {
+        TusdBound bound;
+        TusdCameraInfo camera;
+        TusdLightInfo light;
+        TusdPurpose purpose;
+        TusdInterpolation interpolation;
+        TusdValue* corners = tusd_value_new();
+        TusdValue* faces = tusd_value_new();
+        bool visible = true, authored = true;
+        double ten = 10.0;
+        snprintf(path, sizeof path, "%s/render.usda", argv[1]);
+        CHECK(tusd_stage_open(path, NULL, &stage) == TUSD_STATUS_OK);
+        CHECK(tusd_stage_prim_at_path(stage, "/World/Props/Animated/Ball", &prim, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_prim_visible(stage, prim, NULL, &visible) == TUSD_STATUS_OK && visible);
+        CHECK(tusd_prim_visible(stage, prim, &ten, &visible) == TUSD_STATUS_OK && !visible);
+        CHECK(tusd_stage_prim_at_path(stage, "/World/Props/Proxy", &prim, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_prim_purpose(stage, prim, &purpose) == TUSD_STATUS_OK && purpose == TUSD_PURPOSE_PROXY);
+        CHECK(tusd_stage_prim_at_path(stage, "/World/Props", &prim, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_prim_bound(stage, prim, TUSD_BOUND_SPACE_WORLD, NULL, 0, &bound, &found) == TUSD_STATUS_OK && found);
+        CHECK(bound.aligned_min[0] == 9.0 && bound.aligned_max[2] == 3.0);
+        CHECK(tusd_prim_bound(stage, prim, TUSD_BOUND_SPACE_WORLD, NULL, (1u << TUSD_PURPOSE_DEFAULT) | (1u << TUSD_PURPOSE_PROXY),
+                              &bound, &found) == TUSD_STATUS_OK && bound.aligned_min[0] == 6.0);
+        CHECK(tusd_stage_prim_at_path(stage, "/World/Shot", &prim, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_prim_camera(stage, prim, NULL, &camera, &found) == TUSD_STATUS_OK && found);
+        CHECK(camera.focal_length == 35.0f && camera.projection == TUSD_PROJECTION_PERSPECTIVE && camera.far == 500.0f);
+        CHECK(tusd_stage_prim_at_path(stage, "/World/Key", &prim, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_prim_light(stage, prim, NULL, &light, &found) == TUSD_STATUS_OK);
+        if (tusd_has_feature(TUSD_FEATURE_LUX)) {
+            CHECK(found && light.radiance[0] == 40.0f && light.radius == 0.5f && light.width != light.width);
+            CHECK(strcmp(light.type_name, "SphereLight") == 0 && light.texture == NULL);
+        }
+        CHECK(tusd_stage_prim_at_path(stage, "/World/Grid", &prim, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_prim_geom_subsets(stage, prim, NULL, prims) == TUSD_STATUS_OK && tusd_prim_list_len(prims) == 2);
+        CHECK(tusd_prim_triangulate(stage, prim, NULL, value, corners, faces, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_value_type(value) == TUSD_VALUE_TYPE_INT3 && tusd_value_len(value) == 6);
+        CHECK(((const int32_t*)tusd_value_data(faces))[2] == 2);
+        CHECK(tusd_prim_normals(stage, prim, NULL, value, &interpolation, &authored, &found) == TUSD_STATUS_OK && found);
+        CHECK(!authored && interpolation == TUSD_INTERPOLATION_VERTEX && ((const float*)tusd_value_data(value))[2] == 1.0f);
+        CHECK(tusd_stage_prim_at_path(stage, "/World", &prim, &found) == TUSD_STATUS_OK && found);
+        CHECK(tusd_prim_metadata(stage, prim, "customData:pipeline:version", value, &has) == TUSD_STATUS_OK && has);
+        CHECK(*(const int32_t*)tusd_value_data(value) == 3);
+        CHECK(tusd_prim_metadata_keys(stage, prim, "customData", strings) == TUSD_STATUS_OK);
+        CHECK(tusd_string_list_len(strings) == 2 && strcmp(tusd_string_list_get(strings, 1), "pipeline") == 0);
+        CHECK(tusd_stage_metadata_keys(stage, "customLayerData", strings) == TUSD_STATUS_OK && tusd_string_list_len(strings) == 2);
+        tusd_value_free(faces);
+        tusd_value_free(corners);
+        tusd_stage_free(stage);
+    }
+
     tusd_string_list_free(strings);
     tusd_prim_list_free(prims);
     tusd_value_free(value);

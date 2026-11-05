@@ -1,0 +1,172 @@
+#usda 1.0
+(
+    customLayerData = {
+        string tool = "tinyusd"
+        dictionary build = {
+            int number = 42
+        }
+    }
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World" (
+    customData = {
+        string owner = "props"
+        dictionary pipeline = {
+            string stage = "layout"
+            int version = 3
+        }
+    }
+)
+{
+    def Xform "Hidden"
+    {
+        token visibility = "invisible"
+
+        def Cube "Box"
+        {
+            double size = 2
+        }
+    }
+
+    def Xform "Props"
+    {
+        double3 xformOp:translate = (10, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Crate"
+        {
+            double size = 2
+            double3 xformOp:scale = (1, 2, 3)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }
+
+        def Sphere "Proxy"
+        {
+            uniform token purpose = "proxy"
+            double radius = 4
+        }
+
+        def Scope "Guides"
+        {
+            uniform token purpose = "guide"
+
+            def Cube "Helper"
+            {
+                double size = 100
+            }
+        }
+
+        def Xform "Animated"
+        {
+            token visibility.timeSamples = {
+                0: "inherited",
+                10: "invisible",
+            }
+
+            def Sphere "Ball"
+            {
+                double radius = 1
+            }
+        }
+    }
+
+    def Mesh "Grid" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 3, 5]
+        int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4, 3, 4, 6, 4, 5, 8, 7, 6]
+        int[] holeIndices = [1]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (0, 1, 0), (1, 1, 0), (2, 1, 0), (0, 2, 0), (1, 2, 0), (2, 2, 0)]
+        uniform token subsetFamily:materialBind:familyType = "partition"
+
+        def GeomSubset "Left"
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [0, 2]
+        }
+
+        def GeomSubset "Right"
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [1, 3]
+        }
+    }
+
+    def Mesh "Flipped"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        uniform token orientation = "leftHanded"
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+
+    def Mesh "Normaled"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        normal3f[] primvars:normals = [(0, 0, 1)] (
+            interpolation = "constant"
+        )
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+
+    def Camera "Shot"
+    {
+        float2 clippingRange = (0.5, 500)
+        float exposure = 1
+        float focalLength = 35
+        float fStop = 2.8
+        float focusDistance = 10
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        double3 xformOp:translate = (0, -10, 2)
+        double3 xformOp:rotateXYZ = (90, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+
+    def Camera "Top"
+    {
+        token projection = "orthographic"
+        float horizontalAperture = 200
+        float verticalAperture = 100
+        double3 xformOp:translate = (0, 0, 50)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Key" (
+        prepend apiSchemas = ["ShapingAPI"]
+    )
+    {
+        color3f inputs:color = (1, 0.5, 0.25)
+        float inputs:exposure = 2
+        float inputs:intensity = 10
+        float inputs:radius = 0.5
+        float inputs:shaping:cone:angle = 45
+        bool inputs:normalize = 1
+    }
+
+    def RectLight "Fill"
+    {
+        bool inputs:enableColorTemperature = 1
+        float inputs:colorTemperature = 3000
+        float inputs:height = 2
+        float inputs:width = 4
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:angle = 0.53
+        float inputs:intensity = 50000
+    }
+
+    def DomeLight "Sky"
+    {
+        asset inputs:texture:file = @./tex.png@
+    }
+}

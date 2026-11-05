@@ -129,6 +129,18 @@ typedef enum TusdDof {
   TUSD_DOF_ROT_Z = 6,
 } TusdDof;
 
+typedef enum TusdPurpose {
+  TUSD_PURPOSE_DEFAULT = 0,
+  TUSD_PURPOSE_RENDER = 1,
+  TUSD_PURPOSE_PROXY = 2,
+  TUSD_PURPOSE_GUIDE = 3,
+} TusdPurpose;
+
+typedef enum TusdProjection {
+  TUSD_PROJECTION_PERSPECTIVE = 0,
+  TUSD_PROJECTION_ORTHOGRAPHIC = 1,
+} TusdProjection;
+
 typedef enum TusdFeature {
   TUSD_FEATURE_GEOM = (1 << 0),
   TUSD_FEATURE_SHADE = (1 << 1),
@@ -168,6 +180,12 @@ typedef enum TusdLayerFormat {
   TUSD_LAYER_FORMAT_USDC = 1,
   TUSD_LAYER_FORMAT_USDZ = 2,
 } TusdLayerFormat;
+
+typedef enum TusdBoundSpace {
+  TUSD_BOUND_SPACE_WORLD = 0,
+  TUSD_BOUND_SPACE_LOCAL = 1,
+  TUSD_BOUND_SPACE_UNTRANSFORMED = 2,
+} TusdBoundSpace;
 
 typedef struct TusdBlendShapes TusdBlendShapes;
 
@@ -448,6 +466,54 @@ typedef struct TusdBodyMass {
   double center_of_mass[3];
   double principal_axes[4];
 } TusdBodyMass;
+
+typedef struct TusdBound {
+  double min[3];
+  double max[3];
+  double matrix[16];
+  double aligned_min[3];
+  double aligned_max[3];
+} TusdBound;
+
+typedef struct TusdCameraInfo {
+  double transform[16];
+  enum TusdProjection projection;
+  float horizontal_aperture;
+  float vertical_aperture;
+  float horizontal_aperture_offset;
+  float vertical_aperture_offset;
+  float focal_length;
+  float near;
+  float far;
+  const float *clipping_planes;
+  size_t clipping_plane_count;
+  float f_stop;
+  float focus_distance;
+  float exposure_scale;
+  float horizontal_fov;
+  float vertical_fov;
+  double view_matrix[16];
+  double projection_matrix[16];
+} TusdCameraInfo;
+
+typedef struct TusdLightInfo {
+  const char *type_name;
+  float color[3];
+  float intensity;
+  float exposure;
+  bool normalize;
+  float color_temperature;
+  float radiance[3];
+  float radius;
+  float width;
+  float height;
+  float length;
+  float angle;
+  const char *texture;
+  float cone_angle;
+  float cone_softness;
+  float focus;
+} TusdLightInfo;
 
 #define TUSD_NO_PRIM UINT32_MAX
 
@@ -822,6 +888,71 @@ enum TusdStatus tusd_prim_mass_properties(struct TusdStage *stage,
                                           const struct TusdMassInformation *infos,
                                           size_t count,
                                           struct TusdBodyMass *out);
+
+enum TusdStatus tusd_prim_visible(struct TusdStage *stage,
+                                  TusdPrim p,
+                                  const double *time,
+                                  bool *out_visible);
+
+enum TusdStatus tusd_prim_purpose(struct TusdStage *stage,
+                                  TusdPrim p,
+                                  enum TusdPurpose *out_purpose);
+
+enum TusdStatus tusd_prim_bound(struct TusdStage *stage,
+                                TusdPrim p,
+                                uint32_t space,
+                                const double *time,
+                                uint32_t purpose_bits,
+                                struct TusdBound *out_bound,
+                                bool *out_found);
+
+enum TusdStatus tusd_prim_camera(struct TusdStage *stage,
+                                 TusdPrim p,
+                                 const double *time,
+                                 struct TusdCameraInfo *out_camera,
+                                 bool *out_found);
+
+enum TusdStatus tusd_prim_light(struct TusdStage *stage,
+                                TusdPrim p,
+                                const double *time,
+                                struct TusdLightInfo *out_light,
+                                bool *out_found);
+
+enum TusdStatus tusd_prim_geom_subsets(struct TusdStage *stage,
+                                       TusdPrim p,
+                                       const double *time,
+                                       struct TusdPrimList *out);
+
+enum TusdStatus tusd_prim_triangulate(struct TusdStage *stage,
+                                      TusdPrim p,
+                                      const double *time,
+                                      struct TusdValue *out_point_indices,
+                                      struct TusdValue *out_corner_indices,
+                                      struct TusdValue *out_faces,
+                                      bool *out_found);
+
+enum TusdStatus tusd_prim_normals(struct TusdStage *stage,
+                                  TusdPrim p,
+                                  const double *time,
+                                  struct TusdValue *out_normals,
+                                  enum TusdInterpolation *out_interpolation,
+                                  bool *out_authored,
+                                  bool *out_found);
+
+enum TusdStatus tusd_prim_metadata_keys(struct TusdStage *stage,
+                                        TusdPrim p,
+                                        const char *key,
+                                        struct TusdStringList *out);
+
+enum TusdStatus tusd_attribute_metadata_keys(struct TusdStage *stage,
+                                             TusdPrim p,
+                                             const char *name,
+                                             const char *key,
+                                             struct TusdStringList *out);
+
+enum TusdStatus tusd_stage_metadata_keys(struct TusdStage *stage,
+                                         const char *key,
+                                         struct TusdStringList *out);
 
 enum TusdStatus tusd_value_set_data(struct TusdValue *value,
                                     uint32_t type,

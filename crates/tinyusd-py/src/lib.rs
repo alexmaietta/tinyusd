@@ -153,6 +153,123 @@ struct BlendShapes {
     sub_shapes: Vec<Py<SubShape>>,
 }
 
+#[pyclass(frozen, get_all, name = "Bound", module = "tinyusd._tinyusd")]
+struct BoundingBox {
+    min: [f64; 3],
+    max: [f64; 3],
+    matrix: Py<PyAny>,
+    aligned_min: [f64; 3],
+    aligned_max: [f64; 3],
+}
+
+#[pyclass(frozen, get_all, module = "tinyusd._tinyusd")]
+struct Camera {
+    transform: Py<PyAny>,
+    projection: &'static str,
+    horizontal_aperture: f32,
+    vertical_aperture: f32,
+    horizontal_aperture_offset: f32,
+    vertical_aperture_offset: f32,
+    focal_length: f32,
+    near: f32,
+    far: f32,
+    clipping_planes: Vec<[f32; 4]>,
+    f_stop: f32,
+    focus_distance: f32,
+    exposure_scale: f32,
+    horizontal_fov: f32,
+    vertical_fov: f32,
+    view_matrix: Py<PyAny>,
+    projection_matrix: Py<PyAny>,
+}
+
+#[pyclass(frozen, get_all, module = "tinyusd._tinyusd")]
+struct Light {
+    type_name: String,
+    color: [f32; 3],
+    intensity: f32,
+    exposure: f32,
+    normalize: bool,
+    color_temperature: Option<f32>,
+    radiance: [f32; 3],
+    radius: Option<f32>,
+    width: Option<f32>,
+    height: Option<f32>,
+    length: Option<f32>,
+    angle: Option<f32>,
+    texture: Option<String>,
+    cone_angle: Option<f32>,
+    cone_softness: Option<f32>,
+    focus: Option<f32>,
+}
+
+#[pyclass(frozen, get_all, module = "tinyusd._tinyusd")]
+struct GeomSubset {
+    prim: Py<Prim>,
+    family: String,
+    element_type: String,
+    indices: Py<PyAny>,
+}
+
+#[pyclass(frozen, get_all, module = "tinyusd._tinyusd")]
+struct Triangles {
+    point_indices: Py<PyAny>,
+    corner_indices: Py<PyAny>,
+    faces: Py<PyAny>,
+}
+
+#[pyclass(frozen, get_all, module = "tinyusd._tinyusd")]
+struct Normals {
+    normals: Py<PyAny>,
+    interpolation: &'static str,
+    authored: bool,
+}
+
+fn triples(py: Python<'_>, v: &[[i32; 3]]) -> PyResult<Py<PyAny>> {
+    Ok(PyArray1::from_slice(py, v.as_flattened())
+        .reshape([v.len(), 3])?
+        .into_any()
+        .unbind())
+}
+
+const fn interpolation_name(i: core::Interpolation) -> &'static str {
+    match i {
+        core::Interpolation::Constant => "constant",
+        core::Interpolation::Uniform => "uniform",
+        core::Interpolation::Varying => "varying",
+        core::Interpolation::Vertex => "vertex",
+        core::Interpolation::FaceVarying => "faceVarying",
+    }
+}
+
+fn purpose_list(names: Vec<String>) -> PyResult<Vec<core::Purpose>> {
+    names
+        .iter()
+        .map(|n| match n.as_str() {
+            "default" => Ok(core::Purpose::Default),
+            "render" => Ok(core::Purpose::Render),
+            "proxy" => Ok(core::Purpose::Proxy),
+            "guide" => Ok(core::Purpose::Guide),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown purpose {other:?}"
+            ))),
+        })
+        .collect()
+}
+
+fn bounding_box(py: Python<'_>, b: Option<core::Bound>) -> PyResult<Option<BoundingBox>> {
+    b.map(|b| {
+        Ok(BoundingBox {
+            min: b.min,
+            max: b.max,
+            matrix: matrix4(py, &b.matrix)?.unbind(),
+            aligned_min: b.aligned_min,
+            aligned_max: b.aligned_max,
+        })
+    })
+    .transpose()
+}
+
 fn matrices(py: Python<'_>, m: &[[f64; 16]]) -> PyResult<Py<PyAny>> {
     Ok(PyArray1::from_slice(py, m.as_flattened())
         .reshape([m.len(), 4, 4])?
@@ -917,6 +1034,10 @@ impl Stage {
         to_py(py, &v)
     }
 
+    fn metadata_keys(&self, key: &str) -> PyResult<Vec<String>> {
+        self.inner.stage_metadata_keys(key).map_err(py_err)
+    }
+
     fn has_authored_metadata(&self, key: &str) -> PyResult<bool> {
         self.inner.has_authored_stage_metadata(key).map_err(py_err)
     }
@@ -1221,13 +1342,7 @@ impl Prim {
             name: info.name,
             type_name: info.type_name,
             value,
-            interpolation: match info.interpolation {
-                core::Interpolation::Constant => "constant",
-                core::Interpolation::Uniform => "uniform",
-                core::Interpolation::Varying => "varying",
-                core::Interpolation::Vertex => "vertex",
-                core::Interpolation::FaceVarying => "faceVarying",
-            },
+            interpolation: interpolation_name(info.interpolation),
             element_size: info.element_size,
             indexed: info.indexed,
             source: Py::new(py, self.sibling(py, info.source))?,
@@ -1335,6 +1450,145 @@ impl Prim {
         self.with(py, |s, p| s.skinned_points(p, time))?
             .map(|pts| vec3s(py, &pts))
             .transpose()
+    }
+
+    #[pyo3(signature = (time = None))]
+    fn visible(&self, py: Python<'_>, time: Option<f64>) -> PyResult<bool> {
+        self.with(py, |s, p| s.visible(p, time))
+    }
+
+    #[getter]
+    fn purpose(&self, py: Python<'_>) -> PyResult<&'static str> {
+        Ok(match self.with(py, |s, p| s.purpose(p))? {
+            core::Purpose::Default => "default",
+            core::Purpose::Render => "render",
+            core::Purpose::Proxy => "proxy",
+            core::Purpose::Guide => "guide",
+        })
+    }
+
+    #[pyo3(signature = (time = None, purposes = vec!["default".to_owned()]))]
+    fn world_bound(&self, py: Python<'_>, time: Option<f64>, purposes: Vec<String>) -> PyResult<Option<BoundingBox>> {
+        let purposes = purpose_list(purposes)?;
+        bounding_box(py, self.with(py, |s, p| s.world_bound(p, time, &purposes))?)
+    }
+
+    #[pyo3(signature = (time = None, purposes = vec!["default".to_owned()]))]
+    fn local_bound(&self, py: Python<'_>, time: Option<f64>, purposes: Vec<String>) -> PyResult<Option<BoundingBox>> {
+        let purposes = purpose_list(purposes)?;
+        bounding_box(py, self.with(py, |s, p| s.local_bound(p, time, &purposes))?)
+    }
+
+    #[pyo3(signature = (time = None, purposes = vec!["default".to_owned()]))]
+    fn untransformed_bound(
+        &self,
+        py: Python<'_>,
+        time: Option<f64>,
+        purposes: Vec<String>,
+    ) -> PyResult<Option<BoundingBox>> {
+        let purposes = purpose_list(purposes)?;
+        bounding_box(py, self.with(py, |s, p| s.untransformed_bound(p, time, &purposes))?)
+    }
+
+    #[pyo3(signature = (time = None))]
+    fn camera(&self, py: Python<'_>, time: Option<f64>) -> PyResult<Option<Camera>> {
+        let Some(c) = self.with(py, |s, p| s.camera(p, time))? else {
+            return Ok(None);
+        };
+        Ok(Some(Camera {
+            transform: matrix4(py, &c.transform)?.unbind(),
+            projection: match c.projection {
+                core::Projection::Perspective => "perspective",
+                core::Projection::Orthographic => "orthographic",
+            },
+            horizontal_aperture: c.horizontal_aperture,
+            vertical_aperture: c.vertical_aperture,
+            horizontal_aperture_offset: c.horizontal_aperture_offset,
+            vertical_aperture_offset: c.vertical_aperture_offset,
+            focal_length: c.focal_length,
+            near: c.near,
+            far: c.far,
+            clipping_planes: c.clipping_planes,
+            f_stop: c.f_stop,
+            focus_distance: c.focus_distance,
+            exposure_scale: c.exposure_scale,
+            horizontal_fov: c.horizontal_fov,
+            vertical_fov: c.vertical_fov,
+            view_matrix: matrix4(py, &c.view_matrix)?.unbind(),
+            projection_matrix: matrix4(py, &c.projection_matrix)?.unbind(),
+        }))
+    }
+
+    #[pyo3(signature = (time = None))]
+    fn light(&self, py: Python<'_>, time: Option<f64>) -> PyResult<Option<Light>> {
+        Ok(self.with(py, |s, p| s.light(p, time))?.map(|l| Light {
+            type_name: l.type_name,
+            color: l.color,
+            intensity: l.intensity,
+            exposure: l.exposure,
+            normalize: l.normalize,
+            color_temperature: l.color_temperature,
+            radiance: l.radiance,
+            radius: l.radius,
+            width: l.width,
+            height: l.height,
+            length: l.length,
+            angle: l.angle,
+            texture: l.texture,
+            cone_angle: l.cone_angle,
+            cone_softness: l.cone_softness,
+            focus: l.focus,
+        }))
+    }
+
+    #[pyo3(signature = (time = None))]
+    fn geom_subsets(&self, py: Python<'_>, time: Option<f64>) -> PyResult<Vec<GeomSubset>> {
+        let subsets = self.with(py, |s, p| s.geom_subsets(p, time))?;
+        subsets
+            .into_iter()
+            .map(|g| {
+                Ok(GeomSubset {
+                    prim: Py::new(py, self.sibling(py, g.prim))?,
+                    family: g.family,
+                    element_type: g.element_type,
+                    indices: array(py, &g.indices),
+                })
+            })
+            .collect()
+    }
+
+    #[pyo3(signature = (time = None))]
+    fn triangulate(&self, py: Python<'_>, time: Option<f64>) -> PyResult<Option<Triangles>> {
+        self.with(py, |s, p| s.triangulate(p, time))?
+            .map(|t| {
+                Ok(Triangles {
+                    point_indices: triples(py, &t.point_indices)?,
+                    corner_indices: triples(py, &t.corner_indices)?,
+                    faces: array(py, &t.faces),
+                })
+            })
+            .transpose()
+    }
+
+    #[pyo3(signature = (time = None))]
+    fn normals(&self, py: Python<'_>, time: Option<f64>) -> PyResult<Option<Normals>> {
+        self.with(py, |s, p| s.mesh_normals(p, time))?
+            .map(|n| {
+                Ok(Normals {
+                    normals: vec3s(py, &n.normals)?,
+                    interpolation: interpolation_name(n.interpolation),
+                    authored: n.authored,
+                })
+            })
+            .transpose()
+    }
+
+    fn metadata_keys(&self, py: Python<'_>, key: &str) -> PyResult<Vec<String>> {
+        self.with(py, |s, p| s.prim_metadata_keys(p, key))
+    }
+
+    fn attribute_metadata_keys(&self, py: Python<'_>, name: &str, key: &str) -> PyResult<Vec<String>> {
+        self.with(py, |s, p| s.attribute_metadata_keys(p, name, key))
     }
 
     #[pyo3(signature = (purpose = ""))]
@@ -1610,6 +1864,12 @@ fn _tinyusd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SkinBinding>()?;
     m.add_class::<SubShape>()?;
     m.add_class::<BlendShapes>()?;
+    m.add_class::<BoundingBox>()?;
+    m.add_class::<Camera>()?;
+    m.add_class::<Light>()?;
+    m.add_class::<GeomSubset>()?;
+    m.add_class::<Triangles>()?;
+    m.add_class::<Normals>()?;
     m.add_function(wrap_pyfunction!(features, m)?)?;
     Ok(())
 }

@@ -128,7 +128,7 @@ Every attribute and metadata value has one of the types below, either as a singl
 | Quaternions | `quath`, `quatf`, `quatd` |
 | Matrices | `matrix2d`, `matrix3d`, `matrix4d` |
 | Text | `string`, `token`, `asset`, and path lists from metadata |
-| Unsupported | dictionaries, list edits and other metadata-only types are reported as `Unsupported` instead of failing |
+| Unsupported | dictionaries, list edits and other metadata-only types are reported as `Unsupported` instead of failing. Values inside a dictionary are read by key path, as below |
 
 Layout rules:
 
@@ -169,8 +169,18 @@ The query API returns data exactly as authored. The helpers apply USD's rules wh
 | `skin_binding(prim, time)` | joint indices and weights (indices in the skeleton's joint order), influences per point, whether the binding is rigid, `geomBindTransform`, skinning method, and blend-shape names with their weights at `time` | a prim's own `skel:joints` order, blend-shape weights remapped from the animation |
 | `blend_shapes(prim, time)` | point indices per blend shape, and every sub-shape (rest, in-betweens, primary) with its offsets and its weight at `time` | in-between interpolation: a renderer adds each sub-shape's offsets multiplied by its weight |
 | `skinned_points(prim, time)` | the prim's points with blend shapes and skinning applied, in skeleton space | linear and dual-quaternion skinning, rigid bindings; for engines without GPU skinning or for physics collision meshes |
+| `visible(prim, time)` | whether the prim is drawn | `visibility` inherited from imageable ancestors, so an `invisible` ancestor hides everything under it, and animated visibility |
+| `purpose(prim)` | `default`, `render`, `proxy` or `guide` | `purpose` inherited from ancestors |
+| `world_bound`, `local_bound`, `untransformed_bound(prim, time, purposes)` | a box in its own frame with the matrix that places it, and the axis-aligned box after that matrix | every boundable type's extent, `extent` and computed extents, children, point instancers, invisible descendants left out, and only the purposes asked for (`default` alone when none are given) |
+| `camera(prim, time)` | transform, projection, apertures, focal length, clipping range and planes, f-stop, focus distance, fields of view, the linear exposure scale, and view and projection matrices | the camera's world transform and UsdGeom's lens units, in tenths of a scene unit |
+| `light(prim, time)` | the light's type, color, intensity, exposure and normalize flag, its color temperature, `radiance`, and the shape inputs its type has (radius, width, height, length, angle, texture, cone angle, cone softness, focus) | `radiance` is color × blackbody tint × intensity × 2^exposure. Normalizing by area is left to the renderer, which knows the light's size on screen |
+| `geom_subsets(prim, time)` | each GeomSubset with its family, element type and indices | |
+| `triangulate(prim, time)` | point indices, corner indices (into face-varying data) and the source face of each triangle | fan triangulation, `holeIndices`, and `leftHanded` meshes rewound so every triangle is counterclockwise |
+| `normals(prim, time)` | normals with their interpolation, and whether they were authored | `primvars:normals` before `normals`, and smooth area-weighted vertex normals when neither is authored |
 
-`bound_material` needs the `shade` feature and the skeleton helpers need `skel`; without them, they return `TUSD_STATUS_FEATURE_DISABLED`. The helpers cache their results on the stage (ancestor transforms, material bindings, UsdSkel bindings), so calling them for every prim in a traversal is cheap.
+Metadata dictionaries such as `customData`, `assetInfo` and `customLayerData` are read by key path. `metadata("customData:pipeline:version")` returns the value at `pipeline`, then `version`, and `metadata_keys("customData")` lists a dictionary's keys. The same works for attribute and stage metadata.
+
+`bound_material` needs the `shade` feature, `light` needs `lux` and the skeleton helpers need `skel`; without them, they return `TUSD_STATUS_FEATURE_DISABLED`. The helpers cache their results on the stage (ancestor transforms, bounds, material bindings, UsdSkel bindings), so calling them for every prim in a traversal is cheap.
 
 A renderer driving a skinned character:
 
@@ -521,7 +531,7 @@ python tests/oracle/compare.py --physics target/oracle-write/physics_*.usda
 python tests/oracle/validate.py target/oracle-write/written.usda target/oracle-write/physics_written.usda
 ```
 
-`--helpers` also compares every helper for every prim: world and local transforms, primvars (flattened, with inheritance), bound materials for the all-purpose, `full` and `preview` purposes, point-instancer instances, skeleton poses, skin bindings and skinned points, at the default time or at `--time`.
+`--helpers` also compares every helper for every prim, at the default time or at `--time`. That covers world and local transforms, primvars (flattened, with inheritance), bound materials for the all-purpose, `full` and `preview` purposes, point-instancer instances, skeleton poses, skin bindings, skinned points, visibility, purpose, world bounds and cameras.
 
 ## Roadmap
 

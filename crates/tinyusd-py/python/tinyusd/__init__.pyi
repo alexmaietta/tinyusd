@@ -21,6 +21,66 @@ class AssetPath:
     authored: str
     resolved: str
 
+class Bound:
+    min: list[float]
+    max: list[float]
+    matrix: npt.NDArray[np.float64]
+    aligned_min: list[float]
+    aligned_max: list[float]
+
+class Camera:
+    transform: npt.NDArray[np.float64]
+    projection: str
+    horizontal_aperture: float
+    vertical_aperture: float
+    horizontal_aperture_offset: float
+    vertical_aperture_offset: float
+    focal_length: float
+    near: float
+    far: float
+    clipping_planes: list[list[float]]
+    f_stop: float
+    focus_distance: float
+    exposure_scale: float
+    horizontal_fov: float
+    vertical_fov: float
+    view_matrix: npt.NDArray[np.float64]
+    projection_matrix: npt.NDArray[np.float64]
+
+class Light:
+    type_name: str
+    color: list[float]
+    intensity: float
+    exposure: float
+    normalize: bool
+    color_temperature: Optional[float]
+    radiance: list[float]
+    radius: Optional[float]
+    width: Optional[float]
+    height: Optional[float]
+    length: Optional[float]
+    angle: Optional[float]
+    texture: Optional[str]
+    cone_angle: Optional[float]
+    cone_softness: Optional[float]
+    focus: Optional[float]
+
+class GeomSubset:
+    prim: Prim
+    family: str
+    element_type: str
+    indices: npt.NDArray[np.int32]
+
+class Triangles:
+    point_indices: npt.NDArray[np.int32]
+    corner_indices: npt.NDArray[np.int32]
+    faces: npt.NDArray[np.int32]
+
+class Normals:
+    normals: npt.NDArray[np.float32]
+    interpolation: str
+    authored: bool
+
 class AttributeInfo:
     type_name: str
     uniform: bool
@@ -124,6 +184,18 @@ class Prim:
     def primvar_names(self) -> list[str]: ...
     def primvar(self, name: str, time: Optional[float] = None) -> Optional[Primvar]: ...
     def bound_material(self, purpose: str = "") -> Optional[Prim]: ...
+    purpose: str
+    def visible(self, time: Optional[float] = None) -> bool: ...
+    def world_bound(self, time: Optional[float] = None, purposes: list[str] = ...) -> Optional[Bound]: ...
+    def local_bound(self, time: Optional[float] = None, purposes: list[str] = ...) -> Optional[Bound]: ...
+    def untransformed_bound(self, time: Optional[float] = None, purposes: list[str] = ...) -> Optional[Bound]: ...
+    def camera(self, time: Optional[float] = None) -> Optional[Camera]: ...
+    def light(self, time: Optional[float] = None) -> Optional[Light]: ...
+    def geom_subsets(self, time: Optional[float] = None) -> list[GeomSubset]: ...
+    def triangulate(self, time: Optional[float] = None) -> Optional[Triangles]: ...
+    def normals(self, time: Optional[float] = None) -> Optional[Normals]: ...
+    def metadata_keys(self, key: str) -> list[str]: ...
+    def attribute_metadata_keys(self, name: str, key: str) -> list[str]: ...
     def set(self, name: str, value: Any, time: Optional[float] = None) -> None: ...
     def create_attribute(self, name: str, type_name: str, *, uniform: bool = False) -> None: ...
     def block(self, name: str) -> None: ...
@@ -233,6 +305,7 @@ class Stage:
     def metadata(self, key: str) -> Any: ...
     def has_authored_metadata(self, key: str) -> bool: ...
     def read_asset(self, resolved_path: str) -> bytes: ...
+    def metadata_keys(self, key: str) -> list[str]: ...
     edit_target: str
     @staticmethod
     def create_new(

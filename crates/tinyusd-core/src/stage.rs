@@ -475,22 +475,49 @@ impl Stage {
         Ok(paths.iter().map(ToString::to_string).collect())
     }
 
+    fn prim_metadata_value(&self, prim: Prim, key: &str) -> Result<Option<vt::Value>> {
+        let (field, path) = split_key(key);
+        let value = self.usd_prim(prim)?.metadata::<vt::Value>(field).map_err(usd_err)?;
+        Ok(at_path(value, path))
+    }
+
+    fn attribute_metadata_value(&self, prim: Prim, name: &str, key: &str) -> Result<Option<vt::Value>> {
+        let (field, path) = split_key(key);
+        let value = self
+            .attribute(prim, name)?
+            .metadata::<vt::Value>(field)
+            .map_err(usd_err)?;
+        Ok(at_path(value, path))
+    }
+
+    fn stage_metadata_value(&self, key: &str) -> Result<Option<vt::Value>> {
+        let (field, path) = split_key(key);
+        let value = self.inner.stage_metadata(field).map_err(usd_err)?;
+        Ok(at_path(value, path))
+    }
+
     pub fn prim_metadata(&self, prim: Prim, key: &str, out: &mut Value) -> Result<bool> {
-        let value = self.usd_prim(prim)?.metadata::<vt::Value>(key).map_err(usd_err)?;
-        Ok(assign_metadata(out, value))
+        Ok(assign_metadata(out, self.prim_metadata_value(prim, key)?))
     }
 
     pub fn attribute_metadata(&self, prim: Prim, name: &str, key: &str, out: &mut Value) -> Result<bool> {
-        let value = self
-            .attribute(prim, name)?
-            .metadata::<vt::Value>(key)
-            .map_err(usd_err)?;
-        Ok(assign_metadata(out, value))
+        Ok(assign_metadata(out, self.attribute_metadata_value(prim, name, key)?))
     }
 
     pub fn stage_metadata(&self, key: &str, out: &mut Value) -> Result<bool> {
-        let value = self.inner.stage_metadata(key).map_err(usd_err)?;
-        Ok(assign_metadata(out, value))
+        Ok(assign_metadata(out, self.stage_metadata_value(key)?))
+    }
+
+    pub fn prim_metadata_keys(&self, prim: Prim, key: &str) -> Result<Vec<String>> {
+        Ok(dictionary_keys(self.prim_metadata_value(prim, key)?))
+    }
+
+    pub fn attribute_metadata_keys(&self, prim: Prim, name: &str, key: &str) -> Result<Vec<String>> {
+        Ok(dictionary_keys(self.attribute_metadata_value(prim, name, key)?))
+    }
+
+    pub fn stage_metadata_keys(&self, key: &str) -> Result<Vec<String>> {
+        Ok(dictionary_keys(self.stage_metadata_value(key)?))
     }
 
     pub fn has_authored_stage_metadata(&self, key: &str) -> Result<bool> {
@@ -570,6 +597,34 @@ impl Stage {
         self.resolver
             .resolve(asset_path)
             .map(|p| crate::value::simplify_path(&p.to_string_lossy()))
+    }
+}
+
+fn split_key(key: &str) -> (&str, Option<&str>) {
+    match key.split_once(':') {
+        Some((field, path)) => (field, Some(path)),
+        None => (key, None),
+    }
+}
+
+fn at_path(value: Option<vt::Value>, path: Option<&str>) -> Option<vt::Value> {
+    let Some(path) = path else {
+        return value;
+    };
+    match value? {
+        vt::Value::Dictionary(d) | vt::Value::UnregisteredDictionary(d) => d.get_at(path).cloned(),
+        _ => None,
+    }
+}
+
+fn dictionary_keys(value: Option<vt::Value>) -> Vec<String> {
+    match value {
+        Some(vt::Value::Dictionary(d) | vt::Value::UnregisteredDictionary(d)) => {
+            let mut keys: Vec<String> = d.keys().cloned().collect();
+            keys.sort();
+            keys
+        }
+        _ => Vec::new(),
     }
 }
 
