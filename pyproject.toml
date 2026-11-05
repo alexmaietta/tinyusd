@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "tinyusd"
+description = "Lightweight, dependency-free OpenUSD reader"
+requires-python = ">=3.9"
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "licenses/**/*"]
+dependencies = ["numpy>=1.21"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["crates/tinyusd-py/tests"]
+
+[tool.maturin]
+python-source = "crates/tinyusd-py/python"
+module-name = "tinyusd._tinyusd"
+manifest-path = "crates/tinyusd-py/Cargo.toml"
+features = ["pyo3/extension-module"]

@@ -1,0 +1,39 @@
+[package]
+name = "tinyusd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tinyusd-core = { path = "../crates/tinyusd-core" }
+
+[[bin]]
+name = "open_usda"
+path = "fuzz_targets/open_usda.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_usdc"
+path = "fuzz_targets/open_usdc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_usdz"
+path = "fuzz_targets/open_usdz.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1

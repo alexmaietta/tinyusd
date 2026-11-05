@@ -1,0 +1,23 @@
+language = "C"
+cpp_compat = true
+include_guard = "TINYUSD_H"
+sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
+no_includes = true
+usize_is_size_t = true
+style = "both"
+
+[export]
+prefix = ""
+include = ["TusdFeature", "TusdTraverseFlags", "TusdPrimFlags"]
+exclude = []
+
+[export.rename]
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = true
+
+[defines]
+
+[parse]
+parse_deps = false

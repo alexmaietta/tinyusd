@@ -1,0 +1,146 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    endTimeCode = 10
+    startTimeCode = 0
+    upAxis = "Y"
+)
+
+def Xform "World" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    rel material:binding = </World/Looks/Red>
+    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)]
+    float primvars:roughness = 0.25 (
+        interpolation = "constant"
+    )
+    double3 xformOp:translate = (10, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+        }
+
+        def Material "Blue"
+        {
+        }
+
+        def Material "Preview"
+        {
+        }
+
+        def Material "Strong"
+        {
+        }
+
+        def Material "Collection"
+        {
+        }
+    }
+
+    def Xform "Group" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding:preview = </World/Looks/Preview>
+        float xformOp:rotateY = 90
+        double3 xformOp:scale = (2, 2, 2)
+        uniform token[] xformOpOrder = ["xformOp:rotateY", "xformOp:scale"]
+
+        def Mesh "Inherits"
+        {
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        }
+
+        def Mesh "Own" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            int[] faceVertexCounts = [4, 3]
+            int[] faceVertexIndices = [0, 1, 2, 3, 0, 2, 4]
+            rel material:binding = </World/Looks/Blue>
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (2, 0, 0)]
+            color3f[] primvars:displayColor = [(1, 0, 0), (0, 1, 0)] (
+                interpolation = "uniform"
+            )
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+                interpolation = "faceVarying"
+            )
+            int[] primvars:st:indices = [0, 1, 2, 3, 0, 2, 1]
+            float[] primvars:weights = [1, 0, 0.5, 0.5, 0, 1, 0.25, 0.75, 1, 0] (
+                elementSize = 2
+                interpolation = "vertex"
+            )
+            float3 xformOp:translate.timeSamples = {
+                0: (0, 0, 0),
+                10: (0, 10, 0),
+            }
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def GeomSubset "Subset" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [1]
+                rel material:binding = </World/Looks/Red>
+            }
+        }
+
+        def Mesh "Reset"
+        {
+            double3 xformOp:translate = (1, 2, 3)
+            uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate"]
+        }
+
+        def Mesh "Inverted"
+        {
+            double3 xformOp:translate = (1, 0, 0)
+            quatf xformOp:orient = (0.70710677, 0, 0.70710677, 0)
+            matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 5, 1) )
+            uniform token[] xformOpOrder = ["xformOp:transform", "xformOp:orient", "!invert!xformOp:translate"]
+        }
+    }
+
+    def Xform "Strong" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </World/Looks/Strong> (
+            bindingStrength = "strongerThanDescendants"
+        )
+
+        def Mesh "Weak" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </World/Looks/Blue>
+        }
+    }
+
+    def Xform "ByCollection" (
+        prepend apiSchemas = ["MaterialBindingAPI", "CollectionAPI:shiny"]
+    )
+    {
+        uniform token collection:shiny:expansionRule = "expandPrims"
+        rel collection:shiny:includes = </World/ByCollection/Target>
+        rel material:binding:collection:shiny = [
+            </World/ByCollection.collection:shiny>,
+            </World/Looks/Collection>,
+        ]
+
+        def Mesh "Target"
+        {
+        }
+
+        def Mesh "Other"
+        {
+        }
+    }
+}

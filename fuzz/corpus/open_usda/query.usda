@@ -1,0 +1,151 @@
+#usda 1.0
+(
+    customLayerData = {
+        string author = "tinyusd"
+    }
+    defaultPrim = "World"
+    endTimeCode = 10
+    metersPerUnit = 0.01
+    startTimeCode = 1
+    timeCodesPerSecond = 24
+    upAxis = "Z"
+)
+
+class "_Base"
+{
+    custom int baseValue = 7
+}
+
+def Xform "World" (
+    kind = "assembly"
+)
+{
+    def Scope "Types" (
+        inherits = </_Base>
+    )
+    {
+        custom bool b = 1
+        custom uchar uc = 200
+        custom int i = -3
+        custom uint ui = 4000000000
+        custom int64 i64 = -9000000000
+        custom uint64 u64 = 18000000000000000000
+        custom half h = 1.5
+        custom float f = 2.5
+        custom double d = 3.25
+        custom timecode tc = 12
+        custom string s = "hello"
+        custom token t = "tok"
+        custom asset a = @./part.usda@
+        custom int2 i2 = (1, 2)
+        custom int3 i3 = (1, 2, 3)
+        custom int4 i4 = (1, 2, 3, 4)
+        custom half2 h2 = (0.5, 1)
+        custom half3 h3 = (0.5, 1, 2)
+        custom half4 h4 = (0.5, 1, 2, 4)
+        custom float2 f2 = (1, 2)
+        custom float3 f3 = (1, 2, 3)
+        custom float4 f4 = (1, 2, 3, 4)
+        custom double2 d2 = (1, 2)
+        custom double3 d3 = (1, 2, 3)
+        custom double4 d4 = (1, 2, 3, 4)
+        custom quath qh = (1, 0, 0, 0)
+        custom quatf qf = (0.5, 0.5, 0.5, 0.5)
+        custom quatd qd = (1, 0, 0, 0)
+        custom matrix2d m2 = ( (1, 2), (3, 4) )
+        custom matrix3d m3 = ( (1, 2, 3), (4, 5, 6), (7, 8, 9) )
+        custom matrix4d m4 = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (5, 6, 7, 1) )
+        custom float[] fa = [1, 2, 3]
+        custom point3f[] pts = [(0, 0, 0), (1, 2, 3)]
+        custom token[] ta = ["a", "b"]
+        custom string[] sa = ["x"]
+        custom asset[] aa = [@./part.usda@, @missing.png@]
+        custom bool[] ba = [1, 0, 1]
+        custom float animated.timeSamples = {
+            1: 0,
+            10: 9,
+        }
+        custom float blocked = None
+        color3f[] primvars:displayColor = [(1, 0, 0)] (
+            interpolation = "constant"
+        )
+        custom rel target = </World/Mesh>
+        custom rel forward = </World/Types.target>
+    }
+
+    def Mesh "Mesh" (
+        prepend apiSchemas = ["SemanticsLabelsAPI:class", "PhysicsCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        token[] semantics:labels:class = ["triangle"]
+    }
+
+    def Material "Mat"
+    {
+        token outputs:surface.connect = </World/Mat/Shader.outputs:surface>
+
+        def Shader "Shader"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (1, 0, 0)
+            token outputs:surface
+        }
+    }
+
+    def "Variant" (
+        variants = {
+            string shape = "cube"
+        }
+        prepend variantSets = "shape"
+    )
+    {
+        variantSet "shape" = {
+            "cube" {
+                def Cube "Geom"
+                {
+                }
+            }
+            "sphere" {
+                def Sphere "Geom"
+                {
+                }
+            }
+        }
+    }
+
+    def "Instance1" (
+        instanceable = true
+        prepend references = @./part.usda@</Part>
+    )
+    {
+    }
+
+    def "Instance2" (
+        instanceable = true
+        prepend references = @./part.usda@</Part>
+    )
+    {
+    }
+
+    def "Payloaded" (
+        prepend payload = @./part.usda@</Part>
+    )
+    {
+    }
+
+    over "OverOnly"
+    {
+    }
+
+    def "Inactive" (
+        active = false
+    )
+    {
+        def "Child"
+        {
+        }
+    }
+}

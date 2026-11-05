@@ -1,0 +1,26 @@
+[package]
+name = "tinyusd-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["shade", "lux", "skel", "physics", "vol", "media", "semantics"]
+shade = ["openusd-schemas/shade"]
+lux = ["openusd-schemas/lux"]
+skel = ["openusd-schemas/skel"]
+physics = ["openusd-schemas/physics"]
+vol = ["openusd-schemas/vol"]
+media = ["openusd-schemas/media"]
+semantics = ["openusd-schemas/semantics"]
+
+[dependencies]
+openusd.workspace = true
+openusd-schemas = { workspace = true, features = ["geom"] }
+thiserror.workspace = true
+bytemuck = "1"
+
+[dev-dependencies]
+serde_json = "1"
+half = "2"

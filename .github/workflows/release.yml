@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  archives:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, platform: linux-aarch64 }
+          - { os: macos-latest, platform: macos-aarch64 }
+          - { os: macos-15-intel, platform: macos-x86_64 }
+          - { os: windows-latest, platform: windows-x86_64 }
+          - { os: windows-11-arm, platform: windows-aarch64 }
+        kind: [shared, static]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        shell: bash
+        run: |
+          static=$([ "${{ matrix.kind }}" = static ] && echo ON || echo OFF)
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTINYUSD_STATIC=$static -DTINYUSD_BUILD_TESTS=ON
+          cmake --build build --config Release --parallel
+          ctest --test-dir build -C Release --output-on-failure
+          cmake --install build --config Release --prefix stage
+          version="${GITHUB_REF_NAME#v}"
+          name="tinyusd-${version}-${{ matrix.platform }}-${{ matrix.kind }}.tar.gz"
+          (cd stage && cmake -E tar czf "../$name" .)
+          cmake -E sha256sum "$name" > "$name.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            tinyusd-*.tar.gz
+            tinyusd-*.tar.gz.sha256
+
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64, manylinux: auto }
+          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: auto }
+          - { os: macos-latest, target: aarch64 }
+          - { os: macos-15-intel, target: x86_64 }
+          - { os: windows-latest, target: x64 }
+          - { os: windows-11-arm, target: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+  pypi:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

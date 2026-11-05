@@ -1,0 +1,17 @@
+@PACKAGE_INIT@
+
+if(NOT TARGET tinyusd::tinyusd)
+  add_library(tinyusd::tinyusd @TINYUSD_LIB_KIND@ IMPORTED)
+  set_target_properties(tinyusd::tinyusd PROPERTIES
+    IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@TINYUSD_LIB_FILE@"
+    INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@"
+    INTERFACE_COMPILE_FEATURES cxx_std_17)
+  if("@TINYUSD_IMPLIB_FILE@")
+    set_target_properties(tinyusd::tinyusd PROPERTIES IMPORTED_IMPLIB "${PACKAGE_PREFIX_DIR}/@TINYUSD_IMPLIB_FILE@")
+  endif()
+  if("@TINYUSD_LIB_KIND@" STREQUAL "STATIC")
+    set_target_properties(tinyusd::tinyusd PROPERTIES INTERFACE_LINK_LIBRARIES "@TINYUSD_SYSTEM_LIBS@")
+  endif()
+endif()
+
+check_required_components(tinyusd)

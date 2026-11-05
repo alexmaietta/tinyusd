@@ -1,0 +1,126 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p tinyusd-core --no-default-features --all-targets -- -D warnings
+      - run: cargo test -p tinyusd-core
+      - run: cargo test -p tinyusd-core --no-default-features
+      - run: cargo test -p tinyusd-capi
+
+  cmake:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
+        static: [OFF, ON]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cmake-${{ matrix.static }}
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTINYUSD_STATIC=${{ matrix.static }}
+      - run: cmake --build build --config Release --parallel
+      - run: ctest --test-dir build -C Release --output-on-failure
+      - run: cmake --install build --config Release --prefix "${{ github.workspace }}/install"
+      - run: cmake -S tests/consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install"
+      - run: cmake --build build-consumer --config Release
+      - run: ctest --test-dir build-consumer -C Release --output-on-failure
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/install/lib
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/install/lib
+
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install .[test]
+      - run: pytest -q
+
+  oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build -p tinyusd-core --example dump
+      - run: pip install usd-core
+      - run: python tests/oracle/compare.py tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+      - run: python tests/oracle/compare.py --instance-proxies tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+      - run: python tests/oracle/compare.py --helpers tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+      - run: |
+          for t in 0 2.5 5 10; do
+            python tests/oracle/compare.py --helpers --time $t tests/data/*.usda tests/data/*.usdc tests/data/*.usdz
+          done
+      - name: Kitchen Set
+        run: |
+          curl -sSfL -o kitchen.zip https://openusd.org/files/Kitchen_set.zip
+          unzip -q kitchen.zip -d kitchen
+          python tests/oracle/compare.py kitchen/Kitchen_set/Kitchen_set.usd kitchen/Kitchen_set/Kitchen_set_instanced.usd
+          python tests/oracle/compare.py --instance-proxies kitchen/Kitchen_set/Kitchen_set_instanced.usd
+          python tests/oracle/compare.py --helpers kitchen/Kitchen_set/Kitchen_set.usd kitchen/Kitchen_set/Kitchen_set_instanced.usd
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz each reader for a minute
+        working-directory: fuzz
+        run: |
+          for target in open_usda open_usdc open_usdz; do
+            cargo fuzz run -O "$target" "corpus/$target" -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=262144
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p tinyusd-capi
+      - run: |
+          size=$(stat -c %s target/release/libtinyusd.so)
+          gz=$(gzip -9 -c target/release/libtinyusd.so | wc -c)
+          echo "### libtinyusd.so: $size bytes ($gz gzipped)" >> "$GITHUB_STEP_SUMMARY"
