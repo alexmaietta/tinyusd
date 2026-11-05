@@ -221,7 +221,8 @@ impl Value {
         self.resolved.clear();
         for asset in items {
             self.strings.push(asset.as_str().to_owned());
-            self.resolved.push(asset.resolved_path().unwrap_or_default().to_owned());
+            self.resolved
+                .push(simplify_path(asset.resolved_path().unwrap_or_default()));
         }
         self.len = self.strings.len();
     }
@@ -341,5 +342,36 @@ pub(crate) const fn variability_token(v: sdf::Variability) -> &'static str {
     match v {
         sdf::Variability::Varying => "varying",
         sdf::Variability::Uniform => "uniform",
+    }
+}
+
+pub(crate) fn simplify_path(path: &str) -> String {
+    let Some(rest) = path.strip_prefix(r"\\?\") else {
+        return path.to_owned();
+    };
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        return format!(r"\\{unc}");
+    }
+    let bytes = rest.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\';
+    if drive && rest.len() < 260 {
+        rest.to_owned()
+    } else {
+        path.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::simplify_path;
+
+    #[test]
+    fn strips_windows_verbatim_prefixes() {
+        assert_eq!(simplify_path(r"\\?\C:\a\part.usda"), r"C:\a\part.usda");
+        assert_eq!(simplify_path(r"\\?\C:\a\pkg.usdz[tex.png]"), r"C:\a\pkg.usdz[tex.png]");
+        assert_eq!(simplify_path(r"\\?\UNC\server\share\a.usda"), r"\\server\share\a.usda");
+        assert_eq!(simplify_path("/home/a/part.usda"), "/home/a/part.usda");
+        let long = format!(r"\\?\C:\{}", "x".repeat(300));
+        assert_eq!(simplify_path(&long), long);
     }
 }

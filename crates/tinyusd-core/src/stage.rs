@@ -484,7 +484,11 @@ impl Stage {
     }
 
     pub fn layer_identifiers(&self) -> Vec<String> {
-        self.inner.layer_identifiers()
+        self.inner
+            .layer_identifiers()
+            .iter()
+            .map(|l| crate::value::simplify_path(l))
+            .collect()
     }
 
     pub fn composition_errors(&self) -> Vec<String> {
@@ -535,7 +539,7 @@ impl Stage {
     pub fn resolve_asset(&self, asset_path: &str) -> Option<String> {
         self.resolver
             .resolve(asset_path)
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(|p| crate::value::simplify_path(&p.to_string_lossy()))
     }
 }
 
