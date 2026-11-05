@@ -8,7 +8,7 @@ style = "both"
 
 [export]
 prefix = ""
-include = ["TusdFeature", "TusdTraverseFlags", "TusdPrimFlags"]
+include = ["TusdFeature", "TusdTraverseFlags", "TusdPrimFlags", "TusdLayerFormat"]
 exclude = []
 
 [export.rename]

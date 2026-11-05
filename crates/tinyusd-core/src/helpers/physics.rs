@@ -230,7 +230,7 @@ pub struct PhysicsOptions {
 }
 
 #[cfg(feature = "physics")]
-mod enabled {
+pub(crate) mod enabled {
     use std::collections::HashMap;
 
     use openusd::usd;
@@ -653,6 +653,17 @@ mod enabled {
     fn to_si(p: &mut Physics) {
         let (l, m) = (p.meters_per_unit, p.kilograms_per_unit);
         p.si_units = true;
+        rescale(p, l, m);
+    }
+
+    #[cfg(feature = "write")]
+    pub(crate) fn from_si(p: &mut Physics) {
+        let (l, m) = (p.meters_per_unit, p.kilograms_per_unit);
+        p.si_units = false;
+        rescale(p, 1.0 / l, 1.0 / m);
+    }
+
+    fn rescale(p: &mut Physics, l: f64, m: f64) {
         for s in &mut p.scenes {
             scale(&mut s.gravity_magnitude, l);
         }
@@ -735,5 +746,511 @@ impl Stage {
         _mass_info: impl FnMut(Prim) -> Option<MassInformation>,
     ) -> Result<BodyMass> {
         Err(crate::Error::FeatureDisabled("physics"))
+    }
+}
+
+#[cfg(feature = "write")]
+pub(crate) mod write {
+    use super::{
+        Articulation, Axis, BodyMass, CollisionGroup, Joint, JointKind, Physics, PhysicsMaterial, PhysicsScene,
+        RigidBody, Shape,
+    };
+    #[cfg(feature = "physics")]
+    use super::{Dof, ShapeKind};
+    use crate::{Prim, Result, Stage};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct PhysicsWriteOptions {
+        pub poses: bool,
+    }
+
+    impl PhysicsScene {
+        pub fn new(prim: Prim) -> Self {
+            Self {
+                prim,
+                gravity_direction: [0.0; 3],
+                gravity_magnitude: f32::NEG_INFINITY,
+            }
+        }
+    }
+
+    impl CollisionGroup {
+        pub fn new(prim: Prim) -> Self {
+            Self {
+                prim,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl PhysicsMaterial {
+        pub fn new(prim: Prim) -> Self {
+            Self {
+                prim,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Shape {
+        pub fn new(prim: Prim) -> Self {
+            Self {
+                prim,
+                local_rot: [1.0, 0.0, 0.0, 0.0],
+                local_scale: [1.0; 3],
+                mesh_scale: [1.0; 3],
+                collision_enabled: true,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl RigidBody {
+        pub fn new(prim: Prim) -> Self {
+            Self {
+                prim,
+                rotation: [1.0, 0.0, 0.0, 0.0],
+                scale: [1.0; 3],
+                enabled: true,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Joint {
+        pub fn new(prim: Prim, kind: JointKind) -> Self {
+            Self {
+                prim,
+                kind,
+                local_rot0: [1.0, 0.0, 0.0, 0.0],
+                local_rot1: [1.0, 0.0, 0.0, 0.0],
+                enabled: true,
+                break_force: f32::INFINITY,
+                break_torque: f32::INFINITY,
+                axis: Axis::X,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Articulation {
+        pub fn new(prim: Prim) -> Self {
+            Self {
+                prim,
+                ..Self::default()
+            }
+        }
+    }
+
+    #[cfg(feature = "physics")]
+    mod enabled {
+        use super::*;
+        use crate::{BaseType, Error, Value};
+
+        const fn dof_token(dof: Dof) -> &'static str {
+            match dof {
+                Dof::Distance => "distance",
+                Dof::TransX => "transX",
+                Dof::TransY => "transY",
+                Dof::TransZ => "transZ",
+                Dof::RotX => "rotX",
+                Dof::RotY => "rotY",
+                Dof::RotZ => "rotZ",
+            }
+        }
+
+        const fn axis_token(axis: Axis) -> &'static str {
+            match axis {
+                Axis::X => "X",
+                Axis::Y => "Y",
+                Axis::Z => "Z",
+            }
+        }
+
+        fn float3(v: [f32; 3]) -> Result<Value> {
+            Value::from_slice(BaseType::Float3, false, &[v])
+        }
+
+        fn quatf(v: [f32; 4]) -> Result<Value> {
+            Value::from_slice(BaseType::Quatf, false, &[v])
+        }
+
+        fn trs_matrix(t: [f32; 3], q: [f32; 4], s: [f32; 3]) -> [f64; 16] {
+            let [w, x, y, z] = q.map(f64::from);
+            let len = (w * w + x * x + y * y + z * z).sqrt();
+            let (w, x, y, z) = if len > 0.0 {
+                (w / len, x / len, y / len, z / len)
+            } else {
+                (1.0, 0.0, 0.0, 0.0)
+            };
+            let rows = [
+                [
+                    1.0 - 2.0 * (y * y + z * z),
+                    2.0 * (x * y + w * z),
+                    2.0 * (x * z - w * y),
+                ],
+                [
+                    2.0 * (x * y - w * z),
+                    1.0 - 2.0 * (x * x + z * z),
+                    2.0 * (y * z + w * x),
+                ],
+                [
+                    2.0 * (x * z + w * y),
+                    2.0 * (y * z - w * x),
+                    1.0 - 2.0 * (x * x + y * y),
+                ],
+            ];
+            let mut m = [0.0; 16];
+            for (i, row) in rows.iter().enumerate() {
+                for (k, v) in row.iter().enumerate() {
+                    m[i * 4 + k] = v * f64::from(s[i]);
+                }
+            }
+            m[12..15].copy_from_slice(&t.map(f64::from));
+            m[15] = 1.0;
+            m
+        }
+
+        impl Stage {
+            fn put(&mut self, prim: Prim, name: &str, value: Result<Value>) -> Result<()> {
+                self.set(prim, name, &value?, None)
+            }
+
+            fn ensure_api(&mut self, prim: Prim, schema: &str) -> Result<()> {
+                if self.has_api(prim, schema)? {
+                    return Ok(());
+                }
+                self.apply_api(prim, schema)
+            }
+
+            fn ensure_type(&mut self, prim: Prim, type_name: &str) -> Result<()> {
+                let path = self.path(prim)?.to_owned();
+                if self.prim_at_path(&path)?.is_some() && self.type_name(prim)? == type_name {
+                    return Ok(());
+                }
+                self.define_prim(&path, type_name).map(drop)
+            }
+
+            fn rel(&mut self, prim: Prim, name: &str, targets: &[Prim]) -> Result<()> {
+                if targets.is_empty() {
+                    return Ok(());
+                }
+                let paths: Vec<String> = targets
+                    .iter()
+                    .map(|&t| self.path(t).map(str::to_owned))
+                    .collect::<Result<_>>()?;
+                let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+                self.set_targets(prim, name, &paths)
+            }
+
+            fn filtered_pairs(&mut self, prim: Prim, filtered: &[Prim]) -> Result<()> {
+                if filtered.is_empty() {
+                    return Ok(());
+                }
+                self.ensure_api(prim, "PhysicsFilteredPairsAPI")?;
+                self.rel(prim, "physics:filteredPairs", filtered)
+            }
+
+            pub fn write_physics(&mut self, physics: &Physics, options: &PhysicsWriteOptions) -> Result<()> {
+                let mut p = physics.clone();
+                if p.si_units {
+                    if !(p.meters_per_unit > 0.0 && p.kilograms_per_unit > 0.0) {
+                        return Err(Error::InvalidValue(
+                            "SI values need meters_per_unit and kilograms_per_unit to convert back".to_owned(),
+                        ));
+                    }
+                    crate::helpers::physics::enabled::from_si(&mut p);
+                }
+                for scene in &p.scenes {
+                    self.write_physics_scene(scene)?;
+                }
+                for group in &p.collision_groups {
+                    self.write_collision_group(group)?;
+                }
+                for material in &p.materials {
+                    self.write_physics_material(material)?;
+                }
+                for shape in &p.shapes {
+                    self.write_shape(shape)?;
+                }
+                for body in &p.rigid_bodies {
+                    self.write_rigid_body(body, options.poses)?;
+                }
+                for joint in &p.joints {
+                    self.write_joint(joint)?;
+                }
+                for articulation in &p.articulations {
+                    self.write_articulation(articulation)?;
+                }
+                Ok(())
+            }
+
+            pub fn write_physics_scene(&mut self, scene: &PhysicsScene) -> Result<()> {
+                let prim = scene.prim;
+                self.ensure_type(prim, "PhysicsScene")?;
+                self.put(prim, "physics:gravityDirection", float3(scene.gravity_direction))?;
+                self.put(
+                    prim,
+                    "physics:gravityMagnitude",
+                    Ok(Value::float(scene.gravity_magnitude)),
+                )
+            }
+
+            pub fn write_collision_group(&mut self, group: &CollisionGroup) -> Result<()> {
+                let prim = group.prim;
+                self.ensure_type(prim, "PhysicsCollisionGroup")?;
+                self.put(
+                    prim,
+                    "physics:invertFilteredGroups",
+                    Ok(Value::bool(group.invert_filtered_groups)),
+                )?;
+                if !group.merge_group_name.is_empty() {
+                    self.put(prim, "physics:mergeGroup", Ok(Value::string(&group.merge_group_name)))?;
+                }
+                self.rel(prim, "physics:filteredGroups", &group.filtered_groups)
+            }
+
+            pub fn write_physics_material(&mut self, material: &PhysicsMaterial) -> Result<()> {
+                let prim = material.prim;
+                self.ensure_api(prim, "PhysicsMaterialAPI")?;
+                self.put(
+                    prim,
+                    "physics:staticFriction",
+                    Ok(Value::float(material.static_friction)),
+                )?;
+                self.put(
+                    prim,
+                    "physics:dynamicFriction",
+                    Ok(Value::float(material.dynamic_friction)),
+                )?;
+                self.put(prim, "physics:restitution", Ok(Value::float(material.restitution)))?;
+                self.put(prim, "physics:density", Ok(Value::float(material.density)))
+            }
+
+            pub fn write_shape(&mut self, shape: &Shape) -> Result<()> {
+                let prim = shape.prim;
+                self.ensure_api(prim, "PhysicsCollisionAPI")?;
+                self.put(
+                    prim,
+                    "physics:collisionEnabled",
+                    Ok(Value::bool(shape.collision_enabled)),
+                )?;
+                self.rel(prim, "physics:simulationOwner", &shape.simulation_owners)?;
+                if let Some(&material) = shape.materials.first() {
+                    self.bind_material(prim, material, "physics")?;
+                }
+                self.filtered_pairs(prim, &shape.filtered_collisions)?;
+                if shape.kind == ShapeKind::Mesh {
+                    self.ensure_api(prim, "PhysicsMeshCollisionAPI")?;
+                    if !shape.mesh_approximation.is_empty() {
+                        self.put(
+                            prim,
+                            "physics:approximation",
+                            Ok(Value::token(&shape.mesh_approximation)),
+                        )?;
+                    }
+                }
+                let path = self.path(prim)?.to_owned();
+                for &group in &shape.collision_groups {
+                    self.ensure_type(group, "PhysicsCollisionGroup")?;
+                    let rel = "collection:colliders:includes";
+                    if !self.targets(group, rel, false)?.contains(&path) {
+                        self.add_target(group, rel, &path)?;
+                    }
+                }
+                Ok(())
+            }
+
+            pub fn write_rigid_body(&mut self, body: &RigidBody, pose: bool) -> Result<()> {
+                let prim = body.prim;
+                self.ensure_api(prim, "PhysicsRigidBodyAPI")?;
+                self.put(prim, "physics:rigidBodyEnabled", Ok(Value::bool(body.enabled)))?;
+                self.put(prim, "physics:kinematicEnabled", Ok(Value::bool(body.kinematic)))?;
+                self.put(prim, "physics:startsAsleep", Ok(Value::bool(body.starts_asleep)))?;
+                self.put(prim, "physics:velocity", float3(body.linear_velocity))?;
+                self.put(prim, "physics:angularVelocity", float3(body.angular_velocity))?;
+                self.rel(prim, "physics:simulationOwner", &body.simulation_owners)?;
+                self.filtered_pairs(prim, &body.filtered_collisions)?;
+                if pose {
+                    let m = trs_matrix(body.position, body.rotation, body.scale);
+                    self.set_world_transform(prim, &m, None)?;
+                }
+                Ok(())
+            }
+
+            pub fn write_body_mass(&mut self, prim: Prim, mass: &BodyMass) -> Result<()> {
+                self.ensure_api(prim, "PhysicsMassAPI")?;
+                self.put(prim, "physics:mass", Ok(Value::float(mass.mass as f32)))?;
+                self.put(
+                    prim,
+                    "physics:centerOfMass",
+                    float3(mass.center_of_mass.map(|v| v as f32)),
+                )?;
+                self.put(
+                    prim,
+                    "physics:diagonalInertia",
+                    float3(mass.diagonal_inertia.map(|v| v as f32)),
+                )?;
+                self.put(
+                    prim,
+                    "physics:principalAxes",
+                    quatf(mass.principal_axes.map(|v| v as f32)),
+                )
+            }
+
+            fn body_scale(&self, body: Prim) -> Result<[f32; 3]> {
+                let m = self.world_transform(body, None)?;
+                Ok(std::array::from_fn(|i| {
+                    let row = &m[i * 4..i * 4 + 3];
+                    let len = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    if len > 0.0 { len as f32 } else { 1.0 }
+                }))
+            }
+
+            fn joint_side(&mut self, joint: &Joint, side: usize) -> Result<()> {
+                let (body, pos, rot) = if side == 0 {
+                    (joint.body0, joint.local_pos0, joint.local_rot0)
+                } else {
+                    (joint.body1, joint.local_pos1, joint.local_rot1)
+                };
+                let mut pos = pos;
+                if let Some(body) = body {
+                    let scale = self.body_scale(body)?;
+                    pos = std::array::from_fn(|i| pos[i] / scale[i]);
+                    self.rel(joint.prim, &format!("physics:body{side}"), &[body])?;
+                }
+                self.put(joint.prim, &format!("physics:localPos{side}"), float3(pos))?;
+                self.put(joint.prim, &format!("physics:localRot{side}"), quatf(rot))
+            }
+
+            fn drive(&mut self, prim: Prim, instance: &str, drive: &crate::JointDrive) -> Result<()> {
+                self.ensure_api(prim, &format!("PhysicsDriveAPI:{instance}"))?;
+                let attr = |name: &str| format!("drive:{instance}:physics:{name}");
+                let kind = if drive.acceleration { "acceleration" } else { "force" };
+                self.put(prim, &attr("type"), Ok(Value::token(kind)))?;
+                self.put(prim, &attr("targetPosition"), Ok(Value::float(drive.target_position)))?;
+                self.put(prim, &attr("targetVelocity"), Ok(Value::float(drive.target_velocity)))?;
+                self.put(prim, &attr("maxForce"), Ok(Value::float(drive.force_limit)))?;
+                self.put(prim, &attr("stiffness"), Ok(Value::float(drive.stiffness)))?;
+                self.put(prim, &attr("damping"), Ok(Value::float(drive.damping)))
+            }
+
+            pub fn write_joint(&mut self, joint: &Joint) -> Result<()> {
+                let prim = joint.prim;
+                let type_name = match joint.kind {
+                    JointKind::Fixed => "PhysicsFixedJoint",
+                    JointKind::Revolute => "PhysicsRevoluteJoint",
+                    JointKind::Prismatic => "PhysicsPrismaticJoint",
+                    JointKind::Spherical => "PhysicsSphericalJoint",
+                    JointKind::Distance => "PhysicsDistanceJoint",
+                    JointKind::D6 => "PhysicsJoint",
+                    JointKind::Custom if !joint.type_name.is_empty() => joint.type_name.as_str(),
+                    JointKind::Custom => {
+                        return Err(Error::InvalidValue("a custom joint needs its type_name".to_owned()));
+                    }
+                };
+                self.ensure_type(prim, type_name)?;
+                self.joint_side(joint, 0)?;
+                self.joint_side(joint, 1)?;
+                self.put(prim, "physics:jointEnabled", Ok(Value::bool(joint.enabled)))?;
+                self.put(
+                    prim,
+                    "physics:collisionEnabled",
+                    Ok(Value::bool(joint.collision_enabled)),
+                )?;
+                self.put(prim, "physics:breakForce", Ok(Value::float(joint.break_force)))?;
+                self.put(prim, "physics:breakTorque", Ok(Value::float(joint.break_torque)))?;
+                self.put(
+                    prim,
+                    "physics:excludeFromArticulation",
+                    Ok(Value::bool(joint.exclude_from_articulation)),
+                )?;
+                let limit = joint.limits.first();
+                let unbounded = (f32::NEG_INFINITY, f32::INFINITY);
+                match joint.kind {
+                    JointKind::Revolute | JointKind::Prismatic => {
+                        self.put(prim, "physics:axis", Ok(Value::token(axis_token(joint.axis))))?;
+                        if let Some(l) = limit {
+                            let (lo, hi) = if l.enabled { (l.lower, l.upper) } else { unbounded };
+                            self.put(prim, "physics:lowerLimit", Ok(Value::float(lo)))?;
+                            self.put(prim, "physics:upperLimit", Ok(Value::float(hi)))?;
+                        }
+                        let instance = if joint.kind == JointKind::Revolute {
+                            "angular"
+                        } else {
+                            "linear"
+                        };
+                        if let Some(d) = joint.drives.first() {
+                            self.drive(prim, instance, d)?;
+                        }
+                    }
+                    JointKind::Spherical => {
+                        self.put(prim, "physics:axis", Ok(Value::token(axis_token(joint.axis))))?;
+                        if let Some(l) = limit {
+                            let (a0, a1) = if l.enabled { (l.lower, l.upper) } else { (-1.0, -1.0) };
+                            self.put(prim, "physics:coneAngle0Limit", Ok(Value::float(a0)))?;
+                            self.put(prim, "physics:coneAngle1Limit", Ok(Value::float(a1)))?;
+                        }
+                    }
+                    JointKind::Distance => {
+                        let (lo, hi) = limit.map_or((-1.0, -1.0), |l| (l.lower, l.upper));
+                        let lo = if joint.min_distance_enabled { lo } else { -1.0 };
+                        let hi = if joint.max_distance_enabled { hi } else { -1.0 };
+                        self.put(prim, "physics:minDistance", Ok(Value::float(lo)))?;
+                        self.put(prim, "physics:maxDistance", Ok(Value::float(hi)))?;
+                    }
+                    JointKind::D6 => {
+                        for l in &joint.limits {
+                            let dof = dof_token(l.dof);
+                            self.ensure_api(prim, &format!("PhysicsLimitAPI:{dof}"))?;
+                            let (lo, hi) = if l.enabled { (l.lower, l.upper) } else { unbounded };
+                            self.put(prim, &format!("limit:{dof}:physics:low"), Ok(Value::float(lo)))?;
+                            self.put(prim, &format!("limit:{dof}:physics:high"), Ok(Value::float(hi)))?;
+                        }
+                        for d in &joint.drives {
+                            self.drive(prim, dof_token(d.dof), d)?;
+                        }
+                    }
+                    JointKind::Fixed | JointKind::Custom => {}
+                }
+                Ok(())
+            }
+
+            pub fn write_articulation(&mut self, articulation: &Articulation) -> Result<()> {
+                self.ensure_api(articulation.prim, "PhysicsArticulationRootAPI")?;
+                self.filtered_pairs(articulation.prim, &articulation.filtered_collisions)
+            }
+        }
+    }
+
+    #[cfg(not(feature = "physics"))]
+    impl Stage {
+        pub fn write_physics(&mut self, _physics: &Physics, _options: &PhysicsWriteOptions) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_physics_scene(&mut self, _scene: &PhysicsScene) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_collision_group(&mut self, _group: &CollisionGroup) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_physics_material(&mut self, _material: &PhysicsMaterial) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_shape(&mut self, _shape: &Shape) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_rigid_body(&mut self, _body: &RigidBody, _pose: bool) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_body_mass(&mut self, _prim: Prim, _mass: &BodyMass) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_joint(&mut self, _joint: &Joint) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
+        pub fn write_articulation(&mut self, _articulation: &Articulation) -> Result<()> {
+            Err(crate::Error::FeatureDisabled("physics"))
+        }
     }
 }

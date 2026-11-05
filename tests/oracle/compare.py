@@ -18,18 +18,27 @@ METADATA_KEYS = ["upAxis", "metersPerUnit", "defaultPrim", "startTimeCode", "end
 DEFAULT_DUMP = Path(__file__).resolve().parents[2] / "target" / "debug" / "examples" / "dump"
 
 
+def number(x):
+    x = float(x)
+    if math.isnan(x):
+        return "nan"
+    if math.isinf(x):
+        return "inf" if x > 0 else "-inf"
+    return x
+
+
 def flatten(value):
     if isinstance(value, bool):
         return [float(value)]
     if isinstance(value, (int, float)):
-        return [float(value)]
+        return [number(value)]
     if isinstance(value, Sdf.TimeCode):
-        return [float(value.GetValue())]
+        return [number(value.GetValue())]
     if isinstance(value, (Gf.Quath, Gf.Quatf, Gf.Quatd)):
-        return [float(value.GetReal()), *map(float, value.GetImaginary())]
+        return [number(value.GetReal()), *map(number, value.GetImaginary())]
     if isinstance(value, (Gf.Matrix2d, Gf.Matrix3d, Gf.Matrix4d)):
         n = {Gf.Matrix2d: 2, Gf.Matrix3d: 3, Gf.Matrix4d: 4}[type(value)]
-        return [float(value[r][c]) for r in range(n) for c in range(n)]
+        return [number(value[r][c]) for r in range(n) for c in range(n)]
     if hasattr(value, "__len__") and not isinstance(value, str):
         out = []
         for item in value:

@@ -782,6 +782,7 @@ dependencies = [
  "openusd",
  "openusd-schemas",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

@@ -1,9 +1,15 @@
+#[cfg(feature = "write")]
+mod author;
 mod helpers;
 mod host;
 mod schemas;
 mod stage;
 mod value;
 
+#[cfg(feature = "write")]
+pub use author::LayerFormat;
+#[cfg(feature = "write")]
+pub use helpers::PhysicsWriteOptions;
 pub use helpers::{
     Articulation, Axis, BlendShapes, BodyMass, BoundMaterial, CollisionGroup, Dof, Instances, Interpolation, Joint,
     JointDrive, JointKind, JointLimit, MassInformation, Physics, PhysicsMaterial, PhysicsOptions, PhysicsScene,
@@ -29,6 +35,10 @@ pub enum Error {
     Schema { path: String, message: String },
     #[error("tinyusd was built without the '{0}' feature")]
     FeatureDisabled(&'static str),
+    #[error("invalid value: {0}")]
+    InvalidValue(String),
+    #[error("failed to write '{path}': {message}")]
+    Write { path: String, message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,6 +54,7 @@ pub enum Feature {
     Vol = 1 << 5,
     Media = 1 << 6,
     Semantics = 1 << 7,
+    Write = 1 << 8,
 }
 
 pub const fn features() -> u32 {
@@ -68,6 +79,9 @@ pub const fn features() -> u32 {
     }
     if cfg!(feature = "semantics") {
         bits |= Feature::Semantics as u32;
+    }
+    if cfg!(feature = "write") {
+        bits |= Feature::Write as u32;
     }
     bits
 }

@@ -153,12 +153,25 @@ pub struct Stage {
     pub(crate) inner: usd::Stage,
     prims: Vec<(sdf::Path, String)>,
     lookup: HashMap<sdf::Path, u32>,
-    resolver: Box<dyn ar::Resolver>,
+    pub(crate) resolver: Box<dyn ar::Resolver>,
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    pub(crate) host: Option<Rc<dyn AssetResolver>>,
     pub(crate) caches: crate::helpers::Caches,
+    #[cfg(feature = "write")]
+    pub(crate) batch: Option<crate::author::Batch>,
 }
 
 impl Stage {
     pub fn open(path: &str, options: &OpenOptions) -> Result<Self> {
+        let (builder, resolver) = Self::builder(options)?;
+        let inner = builder.open(path).map_err(|e| Error::Open {
+            path: path.to_owned(),
+            message: e.to_string(),
+        })?;
+        Ok(Self::wrap(inner, resolver, options))
+    }
+
+    pub(crate) fn builder(options: &OpenOptions) -> Result<(usd::StageBuilder, Box<dyn ar::Resolver>)> {
         let load = if options.load_payloads {
             usd::InitialLoadSet::LoadAll
         } else {
@@ -166,7 +179,7 @@ impl Stage {
         };
         let registry = crate::schemas::registry(&options.schema_paths)?;
         let builder = usd::Stage::builder().schema_registry(registry).load(load);
-        let (builder, resolver): (_, Box<dyn ar::Resolver>) = match &options.resolver {
+        Ok(match &options.resolver {
             Some(host) => {
                 let packages = PackageCache::default();
                 (
@@ -175,21 +188,23 @@ impl Stage {
                 )
             }
             None => (builder, Box::new(ar::DefaultResolver::new())),
-        };
-        let inner = builder.open(path).map_err(|e| Error::Open {
-            path: path.to_owned(),
-            message: e.to_string(),
-        })?;
+        })
+    }
+
+    pub(crate) fn wrap(inner: usd::Stage, resolver: Box<dyn ar::Resolver>, options: &OpenOptions) -> Self {
         let root = sdf::Path::abs_root();
         let mut lookup = HashMap::new();
         lookup.insert(root.clone(), 0);
-        Ok(Self {
+        Self {
             inner,
             prims: vec![(root, "/".to_owned())],
             lookup,
             resolver,
+            host: options.resolver.clone(),
             caches: crate::helpers::Caches::default(),
-        })
+            #[cfg(feature = "write")]
+            batch: None,
+        }
     }
 
     pub fn pseudo_root(&self) -> Prim {
@@ -206,6 +221,18 @@ impl Stage {
         Prim(id)
     }
 
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    pub(crate) fn retarget_prims(&mut self, old: &sdf::Path, new: &sdf::Path) {
+        for (id, (path, text)) in self.prims.iter_mut().enumerate() {
+            if let Some(moved) = path.replace_prefix(old, new) {
+                self.lookup.remove(path);
+                self.lookup.insert(moved.clone(), id as u32);
+                *text = moved.to_string();
+                *path = moved;
+            }
+        }
+    }
+
     pub(crate) fn sdf_path(&self, prim: Prim) -> Result<&sdf::Path> {
         self.prims
             .get(prim.0 as usize)
@@ -220,8 +247,8 @@ impl Stage {
 
     pub fn prim_at_path(&mut self, path: &str) -> Result<Option<Prim>> {
         let sdf_path = sdf::Path::new(path).map_err(|e| Error::InvalidPath(format!("{path}: {e}")))?;
-        if let Some(&id) = self.lookup.get(&sdf_path) {
-            return Ok(Some(Prim(id)));
+        if sdf_path == sdf::Path::abs_root() {
+            return Ok(Some(Prim::PSEUDO_ROOT));
         }
         let prim = self.inner.prim(sdf_path.clone()).map_err(usd_err)?;
         if !prim.is_valid().map_err(usd_err)? {
@@ -289,12 +316,12 @@ impl Stage {
         Ok(paths.iter().map(|p| self.intern(p)).collect())
     }
 
-    pub fn prototype_of(&mut self, prim: Prim) -> Result<Option<Prim>> {
+    pub fn prototype(&mut self, prim: Prim) -> Result<Option<Prim>> {
         let proto = self.usd_prim(prim)?.prototype().map_err(usd_err)?;
         Ok(proto.map(|p| self.intern(&p)))
     }
 
-    pub fn instances_of(&mut self, prototype: Prim) -> Result<Vec<Prim>> {
+    pub fn instances(&mut self, prototype: Prim) -> Result<Vec<Prim>> {
         let paths = self.usd_prim(prototype)?.instances().map_err(usd_err)?;
         Ok(paths.iter().map(|p| self.intern(p)).collect())
     }

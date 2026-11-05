@@ -24,6 +24,58 @@ jobs:
       - run: cargo test -p tinyusd-core --no-default-features
       - run: cargo test -p tinyusd-capi
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo llvm-cov --no-report -p tinyusd-core -p tinyusd-capi --all-features
+      - run: |
+          cargo llvm-cov report --html --output-dir report
+          mkdir coverage
+          mv report/html/* coverage/
+          cargo llvm-cov report --json --summary-only --output-path summary.json
+      - name: Badge and summary
+        shell: python
+        run: |
+          import json, os
+          lines = json.load(open("summary.json"))["data"][0]["totals"]["lines"]
+          percent = round(lines["percent"], 1)
+          color = next(c for t, c in [(90, "brightgreen"), (80, "green"), (70, "yellowgreen"), (60, "yellow"), (0, "red")] if percent >= t)
+          json.dump({"schemaVersion": 1, "label": "coverage", "message": f"{percent}%", "color": color}, open("coverage/badge.json", "w"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write(f"### Coverage\n\nLines {percent}% ({lines['covered']} of {lines['count']})\n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+          retention-days: 14
+
+  pages:
+    needs: coverage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage
+          path: site/coverage
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
   cmake:
     strategy:
       fail-fast: false
@@ -91,6 +143,30 @@ jobs:
           python tests/oracle/compare.py --schemas tests/data/schemas/demo --instance-proxies kitchen/Kitchen_set/Kitchen_set_instanced.usd
           python tests/oracle/compare.py --schemas tests/data/schemas/demo --helpers kitchen/Kitchen_set/Kitchen_set.usd kitchen/Kitchen_set/Kitchen_set_instanced.usd
 
+  oracle-write:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo build -p tinyusd-core --example dump
+      - run: pip install . usd-core
+      - name: Write scenes with tinyusd
+        run: python tests/oracle/write_scenes.py written
+      - name: OpenUSD reads them as tinyusd does
+        run: |
+          python tests/oracle/compare.py --helpers written/*.usda written/*.usdc written/*.usdz
+          python tests/oracle/compare.py --instance-proxies written/*.usda written/*.usdc written/*.usdz
+          python tests/oracle/compare.py --physics written/physics_*.usda written/written.usda
+          for t in 0 4 10; do
+            python tests/oracle/compare.py --helpers --time $t written/written.usda written/overlay.usda written/physics_written.usda
+          done
+      - name: OpenUSD's validators accept them
+        run: python tests/oracle/validate.py written/written.usda written/written.usdc written/flattened.usdz written/overlay.usda written/physics_written.usda written/variants.usda
+
   fuzz:
     runs-on: ubuntu-latest
     steps:
@@ -108,6 +184,11 @@ jobs:
           for target in open_usda open_usdc open_usdz; do
             cargo fuzz run -O --target x86_64-unknown-linux-gnu "$target" "corpus/$target" -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=262144
           done
+      - name: Fuzz edit sequences for a minute
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/edit_sequence
+          cargo fuzz run -O --target x86_64-unknown-linux-gnu edit_sequence corpus/edit_sequence -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=1024
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

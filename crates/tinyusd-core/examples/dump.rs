@@ -30,7 +30,16 @@ fn encode(v: &Value) -> Json {
         BaseType::Unsupported => json!("<unsupported>"),
         BaseType::Asset => json!({ "authored": v.strings(), "resolved": v.resolved_paths() }),
         b if b.is_string_like() => json!(v.strings()),
-        _ => json!(numbers(v)),
+        _ => json!(numbers(v).map(|n| n.into_iter().map(number).collect::<Vec<_>>())),
+    }
+}
+
+fn number(x: f64) -> Json {
+    match x {
+        x if x.is_nan() => json!("nan"),
+        f64::INFINITY => json!("inf"),
+        f64::NEG_INFINITY => json!("-inf"),
+        x => json!(x),
     }
 }
 

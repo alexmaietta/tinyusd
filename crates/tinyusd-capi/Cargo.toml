@@ -12,7 +12,7 @@ name = "tinyusd"
 crate-type = ["cdylib", "staticlib"]
 
 [features]
-default = ["shade", "lux", "skel", "physics", "vol", "media", "semantics"]
+default = ["shade", "lux", "skel", "physics", "vol", "media", "semantics", "write"]
 shade = ["tinyusd-core/shade"]
 lux = ["tinyusd-core/lux"]
 skel = ["tinyusd-core/skel"]
@@ -20,6 +20,7 @@ physics = ["tinyusd-core/physics"]
 vol = ["tinyusd-core/vol"]
 media = ["tinyusd-core/media"]
 semantics = ["tinyusd-core/semantics"]
+write = ["tinyusd-core/write"]
 
 [dependencies]
 tinyusd-core.workspace = true

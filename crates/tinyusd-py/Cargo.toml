@@ -10,7 +10,7 @@ name = "_tinyusd"
 crate-type = ["cdylib"]
 
 [dependencies]
-tinyusd-core = { workspace = true, features = ["shade", "lux", "skel", "physics", "vol", "media", "semantics"] }
+tinyusd-core = { workspace = true, features = ["shade", "lux", "skel", "physics", "vol", "media", "semantics", "write"] }
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
 numpy = { version = "0.30", features = ["half"] }
 half = { version = "2", features = ["bytemuck"] }

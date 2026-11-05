@@ -1,16 +1,22 @@
+[![pipeline](https://img.shields.io/github/actions/workflow/status/alexmaietta/tinyusd/ci.yml?branch=main&label=pipeline)](https://github.com/alexmaietta/tinyusd/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://alexmaietta.github.io/tinyusd/coverage/badge.json)](https://alexmaietta.github.io/tinyusd/coverage/)
+[![release](https://img.shields.io/github/v/release/alexmaietta/tinyusd)](https://github.com/alexmaietta/tinyusd/releases)
+[![pypi](https://img.shields.io/pypi/v/tinyusd)](https://pypi.org/project/tinyusd/)
+[![license](https://img.shields.io/badge/license-BSD_3--Clause-blue)](LICENSE)
+
 # tinyusd
 
-A small, dependency-free OpenUSD reader for C, C++ and Python, written in Rust on top of the [`openusd`](https://github.com/mxpv/openusd) crate.
+A small, dependency-free OpenUSD reader and writer for C, C++ and Python, written in Rust on top of the [`openusd`](https://github.com/mxpv/openusd) crate.
 
 tinyusd opens `.usda`, `.usdc` and `.usdz` files, composes them the same way OpenUSD does (sublayers, references, payloads, variants, inherits, specializes, instancing), and lets you query the resulting prims, attributes, relationships, connections, metadata and assets. It does not invent its own scene format. Your importer reads USD data directly and builds whatever structures your engine or simulator needs.
 
-> **Status:** 0.1.0, early. The query API, the resolution helpers (transforms, primvars, materials, point instancers, skeletons and skinning), host file systems and payload loading are complete and checked against OpenUSD on our fixtures and on Pixar's Kitchen Set. See [Roadmap](#roadmap).
+> **Status:** 0.1.0, early. The query API, the resolution helpers (transforms, primvars, materials, point instancers, skeletons and skinning), host file systems and payload loading are complete and checked against OpenUSD on our fixtures and on Pixar's Kitchen Set. The [write API](#writing) is new. Files it writes are checked against OpenUSD too. See [Roadmap](#roadmap).
 
 ## At a glance
 
 | | |
 |---|---|
-| Library size | about 3.9 MB shared library, 1.8 MB gzipped (Linux x86_64, all schema families) |
+| Library size | about 5.0 MB shared library, 2.3 MB gzipped (Linux x86_64, every feature). 4.5 MB without the write API |
 | Runtime dependencies | libc only. No TBB, Boost, Python or OpenUSD |
 | Exported symbols | only the `tusd_*` C API |
 | Source build | about 65 s from a clean cache on 18 cores. Needs Rust 1.96+ |
@@ -242,6 +248,105 @@ In Python, `stage.physics(si_units=True)` returns the same data as dicts and lis
 
 One known difference from upstream. Upstream's parser reports `invertFilteredGroups` as true for a collision group that does not author it, which contradicts the schema, where inverting is opt-in. tinyusd reports false unless it is authored. Groups that author the flag behave the same in both.
 
+## Writing
+
+tinyusd also creates stages, edits stages it opened, and saves them, so a renderer can export a scene and a simulator can record its results as USD. Writing is the `write` feature, on by default, and it adds about 450 KB to the library.
+
+```cpp
+auto stage = tinyusd::Stage::create_new("scene.usda");
+stage.set_up_axis("Z");
+stage.set_meters_per_unit(1.0);
+auto world = stage.define_prim("/World", "Xform");
+stage.set_default_prim(world);
+
+auto mesh = stage.define_prim("/World/Ground", "Mesh");
+mesh.set_mesh(points, face_vertex_counts, face_vertex_indices);  // also writes extent
+mesh.set_primvar("st", "texCoord2f[]", uvs, tinyusd::Interpolation::FaceVarying);
+mesh.bind_material(stage.define_prim("/World/Looks/Concrete", "Material"));
+
+auto body = stage.define_prim("/World/Crate", "Cube");
+body.apply_api("PhysicsRigidBodyAPI");
+body.apply_api("PhysicsMassAPI");
+body.set("physics:mass", 12.0f);
+body.set_trs({0, 0, 2}, {1, 0, 0, 0}, {1, 1, 1});
+
+stage.save();
+```
+
+A simulator recording its results over an asset, in Python. The source file is never written.
+
+```python
+stage = tinyusd.Stage.create_new("run_042.usda")
+stage.add_sublayer("./robot.usda")
+stage.set_up_axis("Z")  # stage metadata is read from the root layer only
+stage.set_meters_per_unit(1.0)
+stage.set_time_range(0, frames - 1, time_codes_per_second=60)
+
+with stage.edit():
+    for frame in range(frames):
+        sim.step()
+        for prim, body in bodies:
+            prim.set_trs(body.position, body.orientation_wxyz, time=frame)
+stage.save()
+```
+
+| Call | What it does |
+|---|---|
+| `create_new(path)`, `create_in_memory()` | A new stage whose root layer is an empty `.usda`, `.usdc` or `.usd` file, or a layer held only in memory |
+| `save()` | Writes every layer with unsaved edits back where it came from |
+| `export(path)`, `export_layer(layer, path)`, `export_bytes(format, layer)` | Writes the flattened stage, or one layer as it stands, to a file or to bytes. The extension picks `.usda`, `.usdc` or `.usdz` |
+| `export_package(path)` | A `.usdz` holding the stage and every layer and asset it reaches, textures included, with their paths rewritten |
+| `define_prim(path, type)`, `override_prim(path)`, `remove_prim(prim)` | `def` a prim (and missing ancestors), author an `over`, or remove the edit target's spec |
+| `set(name, value, time)`, `create_attribute(name, type)`, `block`, `clear` | Values, at the default time or as time samples |
+| `set_targets`, `set_connections` | Relationship targets and attribute connections |
+| `apply_api`, `remove_api`, `set_type_name`, `set_active`, `set_kind`, `set_instanceable` | Prim schemas and metadata. Multiple-apply schemas take their instance after a colon (`PhysicsDriveAPI:angular`). `remove_api` also hides the schema where a weaker layer applies it |
+| `rename_prim`, `reparent_prim`, `move_prim` | Move a prim in every layer of the layer stack that holds it, fixing up references and relationship targets. Prim handles follow the move |
+| `add_target` | One more relationship target, keeping the others |
+| `add_reference`, `add_payload`, `add_inherit`, `add_specialize`, `set_variant_selection` | Composition arcs |
+| `set_up_axis`, `set_meters_per_unit`, `set_kilograms_per_unit`, `set_time_range`, `set_default_prim`, `set_documentation` | Stage metadata, always written to the root layer |
+| `edit_target`, `set_edit_target(layer)`, `add_sublayer(path, create)` | Which layer edits go to |
+| `edit_variant(prim, set, variant)`, `variant_sets(prim)` | Send later edits inside a variant, declaring and selecting it. `set_edit_target` leaves it |
+
+**Values are strictly typed.** A value must match the attribute's declared type exactly, so a `point3f[]` takes a `Float3` array and a `token` takes a `Token`. Nothing is converted, not even `double` to `float`, and a mismatch fails with `TUSD_STATUS_INVALID_VALUE` (`InvalidValueError` in Python). Attributes the prim's schemas declare (`points`, `physics:mass`, `radius`) can be set straight away. Your own need `create_attribute(name, type_name)` first, with a type such as `float`, `double3[]` or `matrix4d`. In C++, `set` infers the type from `float`, `double`, `std::int32_t`, `bool` and `std::array` of those, and `Value::token`, `Value::string` and `Value::asset` build text. In Python, the declared type picks the encoding. NumPy arrays must already have its dtype (`float32` for `point3f[]`), while plain Python numbers and lists are converted within their kind, so an `int` can become a `float` but a `float` never becomes an `int`.
+
+**Batches.** Every edit is written straight away by default. Between `begin_edit` and `commit_edit` (an `EditBatch` in C++, `with stage.edit():` in Python) prims, attributes, values, primvars and relationship targets are queued and written as one transaction. On error nothing is written. Reads inside a batch see the stage as it was before it. Other edits, such as applying schemas or adding arcs, fail inside a batch. Batching pays off for time samples. One batch held across a whole recording writes each attribute's samples together.
+
+| 1000 bodies × 100 frames of `xformOp:translate` | Per value |
+|---|---|
+| One edit at a time | 5.8 µs |
+| One batch per frame | 7.6 µs |
+| One batch for the whole recording | 0.56 µs |
+
+Measured with `cargo run --profile dev-release -p tinyusd-core --example write_bench -- 1000 100` on Linux x86_64.
+
+**Overlays.** A layer is always stronger than its sublayers, so to write over an asset without touching it, create a new stage and add the asset as a sublayer, as above. Edits to the new root then win. USD reads stage metadata such as `upAxis`, `metersPerUnit` and `defaultPrim` from the root layer only, so set them on the new root too. `set_edit_target` sends edits into one of the root layer's sublayers instead.
+
+**Write helpers** author USD's conventions for you, the inverse of the resolution helpers.
+
+| Helper | Writes |
+|---|---|
+| `set_local_transform(matrix, time)` | One `xformOp:transform` and the matching `xformOpOrder` |
+| `set_world_transform(matrix, time)` | A local transform that places the prim at `matrix` under its parent |
+| `set_trs(translate, orient, scale, time)` | `xformOp:translate`, `xformOp:orient` (`w, x, y, z`) and `xformOp:scale`, as physics engines keep poses. New ops are `double3` and `quatd`; ops the prim already declares as `float3` or `quatf` keep their type |
+| `set_mesh(points, counts, indices, time)` | Points, topology and `extent`, after checking that the indices fit |
+| `set_primvar(name, type, value, interpolation, indices, element_size, time)` | `primvars:<name>` with its interpolation, and for indexed primvars its `:indices` |
+| `bind_material(material, purpose)` | `MaterialBindingAPI` and the `material:binding` relationship |
+
+The helpers' caches are reset after every edit, so reads always see what was written. Not written yet are other prim metadata and splines.
+
+**Physics** is written from the same structures `physics()` returns, so a simulator can read a scene, change it and write it back, or build one from scratch. `write_physics(physics, options)` writes everything, converting SI values back to stage units, and `write_physics_scene`, `write_collision_group`, `write_physics_material`, `write_shape`, `write_rigid_body`, `write_joint`, `write_articulation` and `write_body_mass` write one item each, in stage units. Prims of the schema's types (scenes, collision groups, joints) are defined with that type, and API schemas are applied where missing. Each joint kind's limits and drives are written the way UsdPhysics declares them, with a disabled limit written as an unbounded one, and joint frames are written against `body0` and `body1`. Collider geometry and poses are the gprims' own attributes and are left alone. A rigid body's world pose is written as its transform only with `poses` on. Writing back what `physics()` read gives the same `physics()` result, which the tests check on the fixtures. Start new items from `RigidBody::new(prim)`, `Joint::new(prim, kind)` and the like in Rust, from the structures' defaults in C++, or leave keys out of the dicts in Python. Each of these takes UsdPhysics's fallbacks.
+
+```python
+stage.write_physics({
+    "rigid_bodies": [{"prim": arm, "position": [0, 0, 1.5]}, {"prim": base, "kinematic": True}],
+    "joints": [{"prim": hinge, "kind": "Revolute", "axis": "Y", "body0": base, "body1": arm,
+                "limits": [{"dof": "RotY", "lower": -45, "upper": 90}],
+                "drives": [{"dof": "RotY", "stiffness": 50, "damping": 5}]}],
+}, poses=True)
+```
+
+In C, fill the same view structs the read functions return and pass them to `tusd_stage_write_rigid_body` and the others, or collect them in a `TusdPhysics` with `tusd_physics_add_rigid_body` and friends and write it with `tusd_stage_write_physics`. An enum field outside its range is reported as `TUSD_STATUS_INVALID_ARGUMENT`.
+
 ## Loading from your own file system
 
 By default tinyusd reads files from disk. Engines that keep assets in packed archives, virtual file systems or over the network can supply a resolver instead. It has two jobs:
@@ -278,7 +383,9 @@ class PakResolver:
 stage = tinyusd.Stage.open("pak://levels/warehouse.usd", resolver=PakResolver())
 ```
 
-In C, fill a `TusdResolverCallbacks` with `resolve`, `read` and an optional `release`, and point `TusdOpenOptions.resolver` at it. Callbacks hand results back with `tusd_output_set_string`, `tusd_output_set_bytes` and `tusd_output_set_error`. tinyusd copies the struct during `tusd_stage_open` and calls `release(user_data)` exactly once: when the stage is freed, or straight away if opening fails. Callbacks run on the thread that is using the stage and must not call back into that stage. A C++ resolver that throws is treated as a failure, and the exception message becomes the error.
+To save or export a stage opened through a resolver, give it a third job, **write(resolved_path, bytes)**, which stores a file. Every save and export then goes through it instead of the disk. `write` is optional (a `Resolver` method in C++, a method on the object in Python, and a callback in C) and without it saving fails with a write error.
+
+In C, fill a `TusdResolverCallbacks` with `resolve`, `read` and the optional `write` and `release`, and point `TusdOpenOptions.resolver` at it. Callbacks hand results back with `tusd_output_set_string`, `tusd_output_set_bytes` and `tusd_output_set_error`. tinyusd copies the struct during `tusd_stage_open` and calls `release(user_data)` exactly once: when the stage is freed, or straight away if opening fails. Callbacks run on the thread that is using the stage and must not call back into that stage. A C++ resolver that throws is treated as a failure, and the exception message becomes the error.
 
 ## Custom schemas
 
@@ -304,15 +411,15 @@ Open with `load_payloads` off to compose a stage without its payloads, then load
 
 - **Stages** are opened with `tusd_stage_open` and released with `tusd_stage_free`.
 - **Prims** are `uint32_t` handles. They stay valid until their stage is freed. `tusd_stage_pseudo_root()` is the root `/`.
-- **Strings returned directly** by `tusd_prim_path`, `tusd_prim_name`, `tusd_prim_type_name`, `tusd_prim_kind`, and in `TusdAttributeInfo`, `TusdPrimvarInfo` and the binding from `tusd_prim_bound_material`, are owned by the stage and stay valid until it is freed. The functions that return a string directly return `NULL` on error.
+- **Strings returned directly** by `tusd_prim_path`, `tusd_prim_name`, `tusd_prim_type_name`, `tusd_prim_kind`, `tusd_stage_edit_target`, `tusd_stage_add_sublayer`, and in `TusdAttributeInfo`, `TusdPrimvarInfo` and the binding from `tusd_prim_bound_material`, are owned by the stage and stay valid until it is freed. The functions that return a string directly return `NULL` on error.
 - **Matrices** are written to a caller-provided array of 16 doubles.
-- **Values and lists** (`TusdValue`, `TusdPrimList`, `TusdStringList`) are created and freed by the caller and can be reused. Their contents stay valid until the next call that fills them, or until they are freed.
+- **Values and lists** (`TusdValue`, `TusdPrimList`, `TusdStringList`) are created and freed by the caller and can be reused. Fill a `TusdValue` to write with `tusd_value_set_data` or `tusd_value_set_strings`. Their contents stay valid until the next call that fills them, or until they are freed.
 - **Time** is passed as `const double*`. `NULL` means the default time.
 - **Errors.** Fallible calls return a `TusdStatus`. Read the message with `tusd_last_error()`; it is per thread and stays valid until that thread's next tinyusd call. Null or invalid arguments are reported before any other error.
 - **Threads.** Use each stage from one thread at a time. Separate stages can be used on separate threads.
 - **Prim handles** belong to the stage that produced them. Passing one to a different stage is undefined in C; the C++ and Python wrappers reject it.
 - **Panics.** Internal panics never cross the boundary; they are returned as `TUSD_STATUS_PANIC`.
-- **Versioning.** `tusd_abi_version()` must equal `TUSD_ABI_VERSION`. `tusd_has_feature()` reports which schema families were compiled in.
+- **Versioning.** `tusd_abi_version()` must equal `TUSD_ABI_VERSION`. `tusd_has_feature()` reports which schema families, and whether the write API (`TUSD_FEATURE_WRITE`), were compiled in. Without it, the write functions return `TUSD_STATUS_FEATURE_DISABLED`.
 - **Options.** Call `tusd_open_options_init` before setting fields. `struct_size` lets fields be added without breaking older callers.
 
 ## CMake
@@ -331,7 +438,7 @@ To build from source with cargo, leave `TINYUSD_USE_PREBUILT` off (the default).
 |---|---|---|
 | `TINYUSD_USE_PREBUILT` | `OFF` | Download a release archive instead of building with cargo |
 | `TINYUSD_STATIC` | `OFF` | Link a static library instead of a shared one |
-| `TINYUSD_FEATURES` | all families | Schema families to compile in: `shade;lux;skel;physics;vol;media;semantics` |
+| `TINYUSD_FEATURES` | everything | Schema families and the write API to compile in: `shade;lux;skel;physics;vol;media;semantics;write` |
 | `TINYUSD_RELEASE_URL` | GitHub releases | Base URL for prebuilt archives (for mirrors) |
 | `TINYUSD_PREBUILT_URL` | empty | Exact archive URL; overrides `TINYUSD_RELEASE_URL` |
 | `TINYUSD_PREBUILT_SHA256` | empty | Expected archive hash |
@@ -386,7 +493,7 @@ TINYUSD_BLESS=1 cargo test -p tinyusd-capi
 
 ### Fuzzing
 
-The fuzz targets in [fuzz/](fuzz/) open arbitrary bytes as a `.usda`, `.usdc` or `.usdz` file through an in-memory resolver, then traverse everything and read every attribute, relationship, transform, primvar and material binding. They need a nightly toolchain and `cargo install cargo-fuzz`.
+The fuzz targets in [fuzz/](fuzz/) open arbitrary bytes as a `.usda`, `.usdc` or `.usdz` file through an in-memory resolver, then traverse everything and read every attribute, relationship, transform, primvar and material binding. `edit_sequence` reads its bytes as a sequence of edits instead (defining, removing, moving and overriding prims, typed and mistyped values, time samples, batches, schemas, references, variants and the write helpers), then checks that the flattened stage exports and reads back as `.usda` and `.usdc` with the same prims. They need a nightly toolchain and `cargo install cargo-fuzz`. `cargo test` in `fuzz/` also runs `edit_sequence` over a few hundred generated inputs on stable.
 
 ```sh
 cd fuzz
@@ -403,6 +510,15 @@ pip install usd-core
 python tests/oracle/compare.py path/to/*.usd
 python tests/oracle/compare.py --instance-proxies path/to/*.usd
 python tests/oracle/compare.py --helpers --time 2.5 path/to/*.usd
+```
+
+To check the write API, `tests/oracle/write_scenes.py` writes scenes with every format, write helper, physics item, variant and move through the Python package. `compare.py` then checks that OpenUSD reads them the way tinyusd does, and `tests/oracle/validate.py` runs every OpenUSD validator (`UsdValidation`) over them. CI runs all three.
+
+```sh
+python tests/oracle/write_scenes.py target/oracle-write
+python tests/oracle/compare.py --helpers target/oracle-write/*.usd?
+python tests/oracle/compare.py --physics target/oracle-write/physics_*.usda
+python tests/oracle/validate.py target/oracle-write/written.usda target/oracle-write/physics_written.usda
 ```
 
 `--helpers` also compares every helper for every prim: world and local transforms, primvars (flattened, with inheritance), bound materials for the all-purpose, `full` and `preview` purposes, point-instancer instances, skeleton poses, skin bindings and skinned points, at the default time or at `--time`.

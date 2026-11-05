@@ -37,3 +37,10 @@ members = ["."]
 
 [profile.release]
 debug = 1
+
+[[bin]]
+name = "edit_sequence"
+path = "fuzz_targets/edit_sequence.rs"
+test = false
+doc = false
+bench = false

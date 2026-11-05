@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TUSD_ABI_VERSION 8
+#define TUSD_ABI_VERSION 9
 
 typedef enum TusdStatus {
   TUSD_STATUS_OK = 0,
@@ -18,6 +18,8 @@ typedef enum TusdStatus {
   TUSD_STATUS_PANIC = 7,
   TUSD_STATUS_FEATURE_DISABLED = 8,
   TUSD_STATUS_SCHEMA_FAILED = 9,
+  TUSD_STATUS_INVALID_VALUE = 10,
+  TUSD_STATUS_WRITE_FAILED = 11,
 } TusdStatus;
 
 typedef enum TusdSpecifier {
@@ -136,6 +138,7 @@ typedef enum TusdFeature {
   TUSD_FEATURE_VOL = (1 << 5),
   TUSD_FEATURE_MEDIA = (1 << 6),
   TUSD_FEATURE_SEMANTICS = (1 << 7),
+  TUSD_FEATURE_WRITE = (1 << 8),
 } TusdFeature;
 
 typedef enum TusdTraverseFlags {
@@ -159,6 +162,12 @@ typedef enum TusdPrimFlags {
   TUSD_PRIM_FLAGS_PROTOTYPE = (1 << 8),
   TUSD_PRIM_FLAGS_IN_PROTOTYPE = (1 << 9),
 } TusdPrimFlags;
+
+typedef enum TusdLayerFormat {
+  TUSD_LAYER_FORMAT_USDA = 0,
+  TUSD_LAYER_FORMAT_USDC = 1,
+  TUSD_LAYER_FORMAT_USDZ = 2,
+} TusdLayerFormat;
 
 typedef struct TusdBlendShapes TusdBlendShapes;
 
@@ -191,6 +200,11 @@ typedef struct TusdResolverCallbacks {
                   struct TusdOutput *out);
   bool (*read)(void *user_data, const char *resolved_path, struct TusdOutput *out);
   void (*release)(void *user_data);
+  bool (*write)(void *user_data,
+                const char *resolved_path,
+                const uint8_t *data,
+                size_t size,
+                struct TusdOutput *out);
 } TusdResolverCallbacks;
 
 typedef struct TusdOpenOptions {
@@ -808,6 +822,257 @@ enum TusdStatus tusd_prim_mass_properties(struct TusdStage *stage,
                                           const struct TusdMassInformation *infos,
                                           size_t count,
                                           struct TusdBodyMass *out);
+
+enum TusdStatus tusd_value_set_data(struct TusdValue *value,
+                                    uint32_t type,
+                                    bool is_array,
+                                    const void *data,
+                                    size_t count);
+
+enum TusdStatus tusd_value_set_strings(struct TusdValue *value,
+                                       uint32_t type,
+                                       bool is_array,
+                                       const char *const *strings,
+                                       size_t count);
+
+enum TusdStatus tusd_stage_create_new(const char *path,
+                                      const struct TusdOpenOptions *options,
+                                      struct TusdStage **out_stage);
+
+enum TusdStatus tusd_stage_create_in_memory(const struct TusdOpenOptions *options,
+                                            struct TusdStage **out_stage);
+
+enum TusdStatus tusd_stage_save(struct TusdStage *stage);
+
+enum TusdStatus tusd_stage_export(struct TusdStage *stage, const char *path);
+
+enum TusdStatus tusd_stage_export_layer(struct TusdStage *stage,
+                                        const char *layer,
+                                        const char *path);
+
+enum TusdStatus tusd_stage_export_bytes(struct TusdStage *stage,
+                                        const char *layer,
+                                        uint32_t format,
+                                        struct TusdValue *out_bytes);
+
+const char *tusd_stage_edit_target(struct TusdStage *stage);
+
+enum TusdStatus tusd_stage_set_edit_target(struct TusdStage *stage, const char *layer);
+
+enum TusdStatus tusd_stage_add_sublayer(struct TusdStage *stage,
+                                        const char *asset_path,
+                                        bool create,
+                                        const char **out_identifier);
+
+enum TusdStatus tusd_stage_begin_edit(struct TusdStage *stage);
+
+enum TusdStatus tusd_stage_commit_edit(struct TusdStage *stage);
+
+enum TusdStatus tusd_stage_discard_edit(struct TusdStage *stage);
+
+enum TusdStatus tusd_stage_set_default_prim(struct TusdStage *stage, TusdPrim p);
+
+enum TusdStatus tusd_stage_set_up_axis(struct TusdStage *stage, const char *axis);
+
+enum TusdStatus tusd_stage_set_meters_per_unit(struct TusdStage *stage, double meters);
+
+enum TusdStatus tusd_stage_set_kilograms_per_unit(struct TusdStage *stage, double kilograms);
+
+enum TusdStatus tusd_stage_set_time_range(struct TusdStage *stage,
+                                          const struct TusdTimeRange *range);
+
+enum TusdStatus tusd_stage_set_documentation(struct TusdStage *stage, const char *text);
+
+enum TusdStatus tusd_stage_define_prim(struct TusdStage *stage,
+                                       const char *path,
+                                       const char *type_name,
+                                       TusdPrim *out_prim);
+
+enum TusdStatus tusd_stage_override_prim(struct TusdStage *stage,
+                                         const char *path,
+                                         TusdPrim *out_prim);
+
+enum TusdStatus tusd_prim_remove(struct TusdStage *stage, TusdPrim p, bool *out_removed);
+
+enum TusdStatus tusd_prim_set_type_name(struct TusdStage *stage, TusdPrim p, const char *type_name);
+
+enum TusdStatus tusd_prim_set_active(struct TusdStage *stage, TusdPrim p, bool active);
+
+enum TusdStatus tusd_prim_set_kind(struct TusdStage *stage, TusdPrim p, const char *kind);
+
+enum TusdStatus tusd_prim_set_instanceable(struct TusdStage *stage, TusdPrim p, bool instanceable);
+
+enum TusdStatus tusd_prim_apply_api(struct TusdStage *stage, TusdPrim p, const char *schema);
+
+enum TusdStatus tusd_prim_add_reference(struct TusdStage *stage,
+                                        TusdPrim p,
+                                        const char *asset_path,
+                                        const char *prim_path);
+
+enum TusdStatus tusd_prim_add_payload(struct TusdStage *stage,
+                                      TusdPrim p,
+                                      const char *asset_path,
+                                      const char *prim_path);
+
+enum TusdStatus tusd_prim_add_inherit(struct TusdStage *stage, TusdPrim p, const char *path);
+
+enum TusdStatus tusd_prim_add_specialize(struct TusdStage *stage, TusdPrim p, const char *path);
+
+enum TusdStatus tusd_prim_set_variant_selection(struct TusdStage *stage,
+                                                TusdPrim p,
+                                                const char *variant_set,
+                                                const char *variant);
+
+enum TusdStatus tusd_attribute_create(struct TusdStage *stage,
+                                      TusdPrim p,
+                                      const char *name,
+                                      const char *type_name,
+                                      bool uniform);
+
+enum TusdStatus tusd_attribute_set(struct TusdStage *stage,
+                                   TusdPrim p,
+                                   const char *name,
+                                   const double *time,
+                                   const struct TusdValue *value);
+
+enum TusdStatus tusd_attribute_block(struct TusdStage *stage, TusdPrim p, const char *name);
+
+enum TusdStatus tusd_attribute_clear(struct TusdStage *stage, TusdPrim p, const char *name);
+
+enum TusdStatus tusd_attribute_set_connections(struct TusdStage *stage,
+                                               TusdPrim p,
+                                               const char *name,
+                                               const char *const *targets,
+                                               size_t count);
+
+enum TusdStatus tusd_relationship_set_targets(struct TusdStage *stage,
+                                              TusdPrim p,
+                                              const char *name,
+                                              const char *const *targets,
+                                              size_t count);
+
+enum TusdStatus tusd_prim_set_local_transform(struct TusdStage *stage,
+                                              TusdPrim p,
+                                              const double *matrix,
+                                              const double *time);
+
+enum TusdStatus tusd_prim_set_world_transform(struct TusdStage *stage,
+                                              TusdPrim p,
+                                              const double *matrix,
+                                              const double *time);
+
+enum TusdStatus tusd_prim_set_trs(struct TusdStage *stage,
+                                  TusdPrim p,
+                                  const double *translate,
+                                  const double *orient,
+                                  const double *scale,
+                                  const double *time);
+
+enum TusdStatus tusd_prim_set_mesh(struct TusdStage *stage,
+                                   TusdPrim p,
+                                   const float *points,
+                                   size_t point_count,
+                                   const int32_t *face_vertex_counts,
+                                   size_t face_count,
+                                   const int32_t *face_vertex_indices,
+                                   size_t index_count,
+                                   const double *time);
+
+enum TusdStatus tusd_prim_set_primvar(struct TusdStage *stage,
+                                      TusdPrim p,
+                                      const char *name,
+                                      const char *type_name,
+                                      const struct TusdValue *value,
+                                      uint32_t interpolation,
+                                      const int32_t *indices,
+                                      size_t index_count,
+                                      int32_t element_size,
+                                      const double *time);
+
+enum TusdStatus tusd_prim_bind_material(struct TusdStage *stage,
+                                        TusdPrim p,
+                                        TusdPrim material,
+                                        const char *purpose);
+
+enum TusdStatus tusd_stage_export_package(struct TusdStage *stage, const char *path);
+
+enum TusdStatus tusd_prim_remove_api(struct TusdStage *stage, TusdPrim p, const char *schema);
+
+enum TusdStatus tusd_relationship_add_target(struct TusdStage *stage,
+                                             TusdPrim p,
+                                             const char *name,
+                                             const char *target);
+
+enum TusdStatus tusd_prim_move(struct TusdStage *stage,
+                               TusdPrim p,
+                               TusdPrim new_parent,
+                               const char *new_name);
+
+enum TusdStatus tusd_prim_rename(struct TusdStage *stage, TusdPrim p, const char *new_name);
+
+enum TusdStatus tusd_prim_edit_variant(struct TusdStage *stage,
+                                       TusdPrim p,
+                                       const char *variant_set,
+                                       const char *variant);
+
+enum TusdStatus tusd_prim_variant_names(struct TusdStage *stage,
+                                        TusdPrim p,
+                                        const char *variant_set,
+                                        struct TusdStringList *out);
+
+enum TusdStatus tusd_stage_write_physics(struct TusdStage *stage,
+                                         const struct TusdPhysics *physics,
+                                         bool poses);
+
+enum TusdStatus tusd_stage_write_physics_scene(struct TusdStage *stage,
+                                               const struct TusdPhysicsSceneView *view);
+
+enum TusdStatus tusd_stage_write_collision_group(struct TusdStage *stage,
+                                                 const struct TusdCollisionGroupView *view);
+
+enum TusdStatus tusd_stage_write_physics_material(struct TusdStage *stage,
+                                                  const struct TusdPhysicsMaterialView *view);
+
+enum TusdStatus tusd_stage_write_shape(struct TusdStage *stage, const struct TusdShapeView *view);
+
+enum TusdStatus tusd_stage_write_joint(struct TusdStage *stage, const struct TusdJointView *view);
+
+enum TusdStatus tusd_stage_write_articulation(struct TusdStage *stage,
+                                              const struct TusdArticulationView *view);
+
+enum TusdStatus tusd_stage_write_rigid_body(struct TusdStage *stage,
+                                            const struct TusdRigidBodyView *view,
+                                            bool pose);
+
+enum TusdStatus tusd_prim_write_body_mass(struct TusdStage *stage,
+                                          TusdPrim p,
+                                          const struct TusdBodyMass *mass);
+
+enum TusdStatus tusd_physics_set_units(struct TusdPhysics *physics,
+                                       double meters_per_unit,
+                                       double kilograms_per_unit,
+                                       bool si_units);
+
+enum TusdStatus tusd_physics_add_scene(struct TusdPhysics *physics,
+                                       const struct TusdPhysicsSceneView *view);
+
+enum TusdStatus tusd_physics_add_collision_group(struct TusdPhysics *physics,
+                                                 const struct TusdCollisionGroupView *view);
+
+enum TusdStatus tusd_physics_add_material(struct TusdPhysics *physics,
+                                          const struct TusdPhysicsMaterialView *view);
+
+enum TusdStatus tusd_physics_add_shape(struct TusdPhysics *physics,
+                                       const struct TusdShapeView *view);
+
+enum TusdStatus tusd_physics_add_rigid_body(struct TusdPhysics *physics,
+                                            const struct TusdRigidBodyView *view);
+
+enum TusdStatus tusd_physics_add_joint(struct TusdPhysics *physics,
+                                       const struct TusdJointView *view);
+
+enum TusdStatus tusd_physics_add_articulation(struct TusdPhysics *physics,
+                                              const struct TusdArticulationView *view);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -10,6 +10,14 @@ use openusd::{ar, usdz};
 pub trait AssetResolver {
     fn resolve(&self, asset_path: &str, anchor: Option<&str>) -> Option<String>;
     fn read(&self, resolved_path: &str) -> io::Result<Vec<u8>>;
+
+    fn write(&self, resolved_path: &str, bytes: &[u8]) -> io::Result<()> {
+        let _ = bytes;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("the resolver cannot write '{resolved_path}'"),
+        ))
+    }
 }
 
 pub(crate) type PackageCache = Rc<RefCell<HashMap<String, Arc<[u8]>>>>;

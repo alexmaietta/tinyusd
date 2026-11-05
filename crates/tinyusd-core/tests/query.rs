@@ -308,11 +308,11 @@ fn instancing() {
         let i1 = prim(&mut stage, "/World/Instance1");
         let i2 = prim(&mut stage, "/World/Instance2");
         assert!(stage.flags(i1).unwrap().contains(PrimFlags::INSTANCE));
-        let proto = stage.prototype_of(i1).unwrap().unwrap();
-        assert_eq!(stage.prototype_of(i2).unwrap(), Some(proto));
+        let proto = stage.prototype(i1).unwrap().unwrap();
+        assert_eq!(stage.prototype(i2).unwrap(), Some(proto));
         assert_eq!(stage.prototypes().unwrap(), [proto]);
         assert!(stage.flags(proto).unwrap().contains(PrimFlags::PROTOTYPE));
-        let mut instances = stage.instances_of(proto).unwrap();
+        let mut instances = stage.instances(proto).unwrap();
         instances.sort();
         assert_eq!(instances, [i1, i2]);
         assert_eq!(stage.type_name(i1).unwrap(), "Mesh");

@@ -14,6 +14,8 @@ create_exception!(_tinyusd, AssetError, Error);
 create_exception!(_tinyusd, UnsupportedTypeError, Error);
 create_exception!(_tinyusd, FeatureDisabledError, Error);
 create_exception!(_tinyusd, SchemaError, Error);
+create_exception!(_tinyusd, InvalidValueError, Error);
+create_exception!(_tinyusd, WriteError, Error);
 
 fn py_err(e: core::Error) -> PyErr {
     match e {
@@ -22,6 +24,8 @@ fn py_err(e: core::Error) -> PyErr {
         core::Error::Asset { .. } => AssetError::new_err(e.to_string()),
         core::Error::FeatureDisabled(_) => FeatureDisabledError::new_err(e.to_string()),
         core::Error::Schema { .. } => SchemaError::new_err(e.to_string()),
+        core::Error::InvalidValue(_) => InvalidValueError::new_err(e.to_string()),
+        core::Error::Write { .. } => WriteError::new_err(e.to_string()),
         core::Error::InvalidPrim | core::Error::Usd(_) => Error::new_err(e.to_string()),
     }
 }
@@ -365,6 +369,167 @@ impl core::AssetResolver for PyResolver {
                 .map_err(|e| std::io::Error::other(e.to_string()))
         })
     }
+
+    fn write(&self, resolved_path: &str, bytes: &[u8]) -> std::io::Result<()> {
+        Python::attach(|py| {
+            let object = self.object.bind(py);
+            if !object.hasattr("write").unwrap_or(false) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    format!("the resolver has no write method for '{resolved_path}'"),
+                ));
+            }
+            let result = object
+                .call_method1("write", (resolved_path, PyBytes::new(py, bytes)))
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            if result.is_none() || result.is_truthy().unwrap_or(false) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!(
+                    "resolver could not write '{resolved_path}'"
+                )))
+            }
+        })
+    }
+}
+
+fn numpy_dtype(base: BaseType) -> &'static str {
+    match base {
+        BaseType::Bool => "bool",
+        BaseType::UChar => "uint8",
+        BaseType::Int | BaseType::Int2 | BaseType::Int3 | BaseType::Int4 => "int32",
+        BaseType::UInt => "uint32",
+        BaseType::Int64 => "int64",
+        BaseType::UInt64 => "uint64",
+        BaseType::Half | BaseType::Half2 | BaseType::Half3 | BaseType::Half4 | BaseType::Quath => "float16",
+        BaseType::Float | BaseType::Float2 | BaseType::Float3 | BaseType::Float4 | BaseType::Quatf => "float32",
+        _ => "float64",
+    }
+}
+
+fn from_py(py: Python<'_>, value: &Bound<'_, PyAny>, type_name: &str) -> PyResult<core::Value> {
+    let (base, array) = BaseType::from_type_name(type_name)
+        .ok_or_else(|| InvalidValueError::new_err(format!("values of type '{type_name}' can't be written")))?;
+    if base.is_string_like() {
+        let one = |item: &Bound<'_, PyAny>| -> PyResult<String> {
+            match item.cast::<AssetPath>() {
+                Ok(asset) => Ok(asset.get().authored.clone()),
+                Err(_) => item
+                    .extract::<String>()
+                    .map_err(|_| InvalidValueError::new_err(format!("'{type_name}' takes str values"))),
+            }
+        };
+        let items = if array {
+            if value.is_instance_of::<pyo3::types::PyString>() {
+                return Err(InvalidValueError::new_err(format!("'{type_name}' takes a list of str")));
+            }
+            value
+                .try_iter()?
+                .map(|item| one(&item?))
+                .collect::<PyResult<Vec<_>>>()?
+        } else {
+            vec![one(value)?]
+        };
+        return core::Value::from_strings(base, array, &items).map_err(py_err);
+    }
+    let np = py.import("numpy")?;
+    let dtype = numpy_dtype(base);
+    let typed = value.is_instance(&np.getattr("ndarray")?)? || value.is_instance(&np.getattr("generic")?)?;
+    let converted = if typed {
+        let have: String = value.getattr("dtype")?.getattr("name")?.extract()?;
+        if have != dtype {
+            return Err(InvalidValueError::new_err(format!(
+                "'{type_name}' takes {dtype} data, got {have}; convert it with .astype(numpy.{dtype}) first"
+            )));
+        }
+        np.call_method1("ascontiguousarray", (value,))?
+    } else {
+        let raw = np.call_method1("asarray", (value,))?;
+        let kind: String = raw.getattr("dtype")?.getattr("kind")?.extract()?;
+        let size: usize = raw.getattr("size")?.extract()?;
+        let allowed = match dtype {
+            "bool" => kind == "b",
+            "float16" | "float32" | "float64" => matches!(kind.as_str(), "f" | "i" | "u"),
+            _ => matches!(kind.as_str(), "i" | "u"),
+        };
+        if !allowed && size > 0 {
+            return Err(InvalidValueError::new_err(format!(
+                "'{type_name}' can't take {} values",
+                raw.getattr("dtype")?.getattr("name")?
+            )));
+        }
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dtype", dtype)?;
+        np.getattr("asarray")?.call((value,), Some(&kwargs))?
+    };
+    let bytes: Vec<u8> = converted.call_method0("tobytes")?.extract()?;
+    core::Value::from_bytes(base, array, &bytes).map_err(py_err)
+}
+
+fn doubles<const N: usize>(py: Python<'_>, value: &Bound<'_, PyAny>, what: &str) -> PyResult<[f64; N]> {
+    let v = from_py(py, value, "double[]")?;
+    let items = v.as_slice::<f64>().unwrap_or(&[]);
+    items
+        .try_into()
+        .map_err(|_| InvalidValueError::new_err(format!("{what} takes {N} numbers, got {}", items.len())))
+}
+
+fn interpolation(name: &str) -> PyResult<core::Interpolation> {
+    Ok(match name {
+        "constant" => core::Interpolation::Constant,
+        "uniform" => core::Interpolation::Uniform,
+        "varying" => core::Interpolation::Varying,
+        "vertex" => core::Interpolation::Vertex,
+        "faceVarying" => core::Interpolation::FaceVarying,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown interpolation {other:?}"
+            )));
+        }
+    })
+}
+
+fn open_options(load_payloads: bool, resolver: Option<Py<PyAny>>, schemas: Vec<PathBuf>) -> core::OpenOptions {
+    core::OpenOptions {
+        load_payloads,
+        resolver: resolver
+            .map(|object| std::rc::Rc::new(PyResolver { object }) as std::rc::Rc<dyn core::AssetResolver>),
+        schema_paths: schemas,
+    }
+}
+
+#[pyclass(unsendable, module = "tinyusd._tinyusd")]
+struct EditBatch {
+    stage: Py<Stage>,
+}
+
+#[pymethods]
+impl EditBatch {
+    fn __enter__(slf: PyRef<'_, Self>) -> PyResult<PyRef<'_, Self>> {
+        slf.stage
+            .bind(slf.py())
+            .borrow_mut()
+            .inner
+            .begin_edit()
+            .map_err(py_err)?;
+        Ok(slf)
+    }
+
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        exc_type: Option<Bound<'_, PyAny>>,
+        _exc: Option<Bound<'_, PyAny>>,
+        _tb: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        let mut stage = self.stage.bind(py).borrow_mut();
+        if exc_type.is_some() {
+            stage.inner.discard_edit();
+        } else {
+            stage.inner.commit_edit().map_err(py_err)?;
+        }
+        Ok(false)
+    }
 }
 
 #[pyclass(unsendable, module = "tinyusd._tinyusd")]
@@ -398,15 +563,182 @@ impl Stage {
     #[pyo3(signature = (path, *, load_payloads = true, resolver = None, schemas = Vec::new()))]
     fn open(path: PathBuf, load_payloads: bool, resolver: Option<Py<PyAny>>, schemas: Vec<PathBuf>) -> PyResult<Self> {
         let path = path.to_string_lossy().into_owned();
-        let resolver =
-            resolver.map(|object| std::rc::Rc::new(PyResolver { object }) as std::rc::Rc<dyn core::AssetResolver>);
-        let options = core::OpenOptions {
-            load_payloads,
-            resolver,
-            schema_paths: schemas,
-        };
+        let options = open_options(load_payloads, resolver, schemas);
         let inner = core::Stage::open(&path, &options).map_err(py_err)?;
         Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (path, *, resolver = None, schemas = Vec::new()))]
+    fn create_new(path: PathBuf, resolver: Option<Py<PyAny>>, schemas: Vec<PathBuf>) -> PyResult<Self> {
+        let path = path.to_string_lossy().into_owned();
+        let options = open_options(true, resolver, schemas);
+        let inner = core::Stage::create_new(&path, &options).map_err(py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (*, resolver = None, schemas = Vec::new()))]
+    fn create_in_memory(resolver: Option<Py<PyAny>>, schemas: Vec<PathBuf>) -> PyResult<Self> {
+        let options = open_options(true, resolver, schemas);
+        let inner = core::Stage::create_in_memory(&options).map_err(py_err)?;
+        Ok(Self { inner })
+    }
+
+    fn save(&mut self) -> PyResult<()> {
+        self.inner.save().map_err(py_err)
+    }
+
+    fn export(&self, path: PathBuf) -> PyResult<()> {
+        self.inner.export(&path.to_string_lossy()).map_err(py_err)
+    }
+
+    #[pyo3(signature = (physics, *, poses = false))]
+    fn write_physics(slf: &Bound<'_, Self>, physics: &Bound<'_, PyDict>, poses: bool) -> PyResult<()> {
+        let p = physics_input::physics(slf, physics)?;
+        slf.borrow_mut()
+            .inner
+            .write_physics(&p, &core::PhysicsWriteOptions { poses })
+            .map_err(py_err)
+    }
+
+    fn write_body_mass(slf: &Bound<'_, Self>, prim: PyRef<'_, Prim>, mass: &Bound<'_, PyDict>) -> PyResult<()> {
+        let handle = own(slf, &prim)?;
+        let m = physics_input::body_mass(mass, slf)?;
+        slf.borrow_mut().inner.write_body_mass(handle, &m).map_err(py_err)
+    }
+
+    #[pyo3(signature = (prim, new_parent, new_name = None))]
+    fn move_prim(
+        slf: &Bound<'_, Self>,
+        prim: PyRef<'_, Prim>,
+        new_parent: PyRef<'_, Prim>,
+        new_name: Option<&str>,
+    ) -> PyResult<()> {
+        let (handle, parent) = (own(slf, &prim)?, own(slf, &new_parent)?);
+        let mut stage = slf.borrow_mut();
+        let name = match new_name {
+            Some(n) => n.to_owned(),
+            None => stage.inner.name(handle).map_err(py_err)?.to_owned(),
+        };
+        stage.inner.move_prim(handle, parent, &name).map_err(py_err)
+    }
+
+    fn export_package(&self, path: PathBuf) -> PyResult<()> {
+        self.inner.export_package(&path.to_string_lossy()).map_err(py_err)
+    }
+
+    fn export_layer(&self, layer: &str, path: PathBuf) -> PyResult<()> {
+        self.inner.export_layer(layer, &path.to_string_lossy()).map_err(py_err)
+    }
+
+    #[pyo3(signature = (format = "usda", layer = None))]
+    fn export_bytes<'py>(&self, py: Python<'py>, format: &str, layer: Option<&str>) -> PyResult<Bound<'py, PyBytes>> {
+        let format = match format {
+            "usda" => core::LayerFormat::Usda,
+            "usdc" => core::LayerFormat::Usdc,
+            "usdz" => core::LayerFormat::Usdz,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "format must be 'usda', 'usdc' or 'usdz', not {other:?}"
+                )));
+            }
+        };
+        let bytes = self.inner.export_bytes(layer, format).map_err(py_err)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    #[getter]
+    fn edit_target(&self) -> String {
+        self.inner.edit_target()
+    }
+
+    fn set_edit_target(&mut self, layer: &str) -> PyResult<()> {
+        self.inner.set_edit_target(layer).map_err(py_err)
+    }
+
+    #[pyo3(signature = (asset_path, *, create = false))]
+    fn add_sublayer(&mut self, asset_path: &str, create: bool) -> PyResult<String> {
+        self.inner.add_sublayer(asset_path, create).map_err(py_err)
+    }
+
+    fn edit(slf: &Bound<'_, Self>) -> EditBatch {
+        EditBatch {
+            stage: slf.clone().unbind(),
+        }
+    }
+
+    fn begin_edit(&mut self) -> PyResult<()> {
+        self.inner.begin_edit().map_err(py_err)
+    }
+
+    fn commit_edit(&mut self) -> PyResult<()> {
+        self.inner.commit_edit().map_err(py_err)
+    }
+
+    fn discard_edit(&mut self) {
+        self.inner.discard_edit();
+    }
+
+    #[pyo3(signature = (path, type_name = ""))]
+    fn define_prim(slf: &Bound<'_, Self>, path: &str, type_name: &str) -> PyResult<Prim> {
+        let handle = slf.borrow_mut().inner.define_prim(path, type_name).map_err(py_err)?;
+        Ok(Prim {
+            stage: slf.clone().unbind(),
+            handle,
+        })
+    }
+
+    fn override_prim(slf: &Bound<'_, Self>, path: &str) -> PyResult<Prim> {
+        let handle = slf.borrow_mut().inner.override_prim(path).map_err(py_err)?;
+        Ok(Prim {
+            stage: slf.clone().unbind(),
+            handle,
+        })
+    }
+
+    fn remove_prim(slf: &Bound<'_, Self>, prim: PyRef<'_, Prim>) -> PyResult<bool> {
+        let handle = own(slf, &prim)?;
+        slf.borrow_mut().inner.remove_prim(handle).map_err(py_err)
+    }
+
+    fn set_default_prim(slf: &Bound<'_, Self>, prim: PyRef<'_, Prim>) -> PyResult<()> {
+        let handle = own(slf, &prim)?;
+        slf.borrow_mut().inner.set_default_prim(handle).map_err(py_err)
+    }
+
+    fn set_up_axis(&mut self, axis: &str) -> PyResult<()> {
+        self.inner.set_up_axis(axis).map_err(py_err)
+    }
+
+    fn set_meters_per_unit(&mut self, meters: f64) -> PyResult<()> {
+        self.inner.set_meters_per_unit(meters).map_err(py_err)
+    }
+
+    fn set_kilograms_per_unit(&mut self, kilograms: f64) -> PyResult<()> {
+        self.inner.set_kilograms_per_unit(kilograms).map_err(py_err)
+    }
+
+    #[pyo3(signature = (start, end, *, time_codes_per_second = None, frames_per_second = None))]
+    fn set_time_range(
+        &mut self,
+        start: f64,
+        end: f64,
+        time_codes_per_second: Option<f64>,
+        frames_per_second: Option<f64>,
+    ) -> PyResult<()> {
+        self.inner.set_time_code_range(start, end).map_err(py_err)?;
+        if let Some(rate) = time_codes_per_second {
+            self.inner.set_time_codes_per_second(rate).map_err(py_err)?;
+        }
+        if let Some(rate) = frames_per_second {
+            self.inner.set_frames_per_second(rate).map_err(py_err)?;
+        }
+        Ok(())
+    }
+
+    fn set_documentation(&mut self, text: &str) -> PyResult<()> {
+        self.inner.set_documentation(text).map_err(py_err)
     }
 
     #[getter]
@@ -755,12 +1087,12 @@ impl Prim {
 
     #[getter]
     fn prototype(&self, py: Python<'_>) -> PyResult<Option<Prim>> {
-        Ok(self.with(py, |s, p| s.prototype_of(p))?.map(|h| self.sibling(py, h)))
+        Ok(self.with(py, |s, p| s.prototype(p))?.map(|h| self.sibling(py, h)))
     }
 
     fn instances(&self, py: Python<'_>) -> PyResult<Vec<Prim>> {
         Ok(self
-            .with(py, |s, p| s.instances_of(p))?
+            .with(py, |s, p| s.instances(p))?
             .into_iter()
             .map(|h| self.sibling(py, h))
             .collect())
@@ -1012,6 +1344,215 @@ impl Prim {
             .map(|b| self.sibling(py, b.material)))
     }
 
+    #[pyo3(signature = (name, value, time = None))]
+    fn set(&self, py: Python<'_>, name: &str, value: &Bound<'_, PyAny>, time: Option<f64>) -> PyResult<()> {
+        let declared = self.with(py, |s, p| s.declared_type(p, name))?.ok_or_else(|| {
+            InvalidValueError::new_err(format!(
+                "attribute '{name}' is not declared; create it with create_attribute first"
+            ))
+        })?;
+        let value = from_py(py, value, &declared)?;
+        self.with(py, |s, p| s.set(p, name, &value, time))
+    }
+
+    #[pyo3(signature = (name, type_name, *, uniform = false))]
+    fn create_attribute(&self, py: Python<'_>, name: &str, type_name: &str, uniform: bool) -> PyResult<()> {
+        self.with(py, |s, p| s.create_attribute(p, name, type_name, uniform))
+    }
+
+    fn block(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.block(p, name))
+    }
+
+    fn clear(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.clear(p, name))
+    }
+
+    fn set_connections(&self, py: Python<'_>, name: &str, targets: Vec<String>) -> PyResult<()> {
+        let targets: Vec<&str> = targets.iter().map(String::as_str).collect();
+        self.with(py, |s, p| s.set_connections(p, name, &targets))
+    }
+
+    fn set_targets(&self, py: Python<'_>, name: &str, targets: Vec<String>) -> PyResult<()> {
+        let targets: Vec<&str> = targets.iter().map(String::as_str).collect();
+        self.with(py, |s, p| s.set_targets(p, name, &targets))
+    }
+
+    fn apply_api(&self, py: Python<'_>, schema: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.apply_api(p, schema))
+    }
+
+    fn set_type_name(&self, py: Python<'_>, type_name: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.set_type_name(p, type_name))
+    }
+
+    fn set_active(&self, py: Python<'_>, active: bool) -> PyResult<()> {
+        self.with(py, |s, p| s.set_active(p, active))
+    }
+
+    fn set_kind(&self, py: Python<'_>, kind: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.set_kind(p, kind))
+    }
+
+    fn set_instanceable(&self, py: Python<'_>, instanceable: bool) -> PyResult<()> {
+        self.with(py, |s, p| s.set_instanceable(p, instanceable))
+    }
+
+    #[pyo3(signature = (asset_path = "", prim_path = ""))]
+    fn add_reference(&self, py: Python<'_>, asset_path: &str, prim_path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.add_reference(p, asset_path, prim_path))
+    }
+
+    #[pyo3(signature = (asset_path, prim_path = ""))]
+    fn add_payload(&self, py: Python<'_>, asset_path: &str, prim_path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.add_payload(p, asset_path, prim_path))
+    }
+
+    fn add_inherit(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.add_inherit(p, path))
+    }
+
+    fn add_specialize(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.add_specialize(p, path))
+    }
+
+    fn set_variant_selection(&self, py: Python<'_>, variant_set: &str, variant: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.set_variant_selection(p, variant_set, variant))
+    }
+
+    #[pyo3(signature = (matrix, time = None))]
+    fn set_local_transform(&self, py: Python<'_>, matrix: &Bound<'_, PyAny>, time: Option<f64>) -> PyResult<()> {
+        let m = doubles::<16>(py, matrix, "matrix")?;
+        self.with(py, |s, p| s.set_local_transform(p, &m, time))
+    }
+
+    #[pyo3(signature = (matrix, time = None))]
+    fn set_world_transform(&self, py: Python<'_>, matrix: &Bound<'_, PyAny>, time: Option<f64>) -> PyResult<()> {
+        let m = doubles::<16>(py, matrix, "matrix")?;
+        self.with(py, |s, p| s.set_world_transform(p, &m, time))
+    }
+
+    #[pyo3(signature = (translate, orient = None, scale = None, time = None))]
+    fn set_trs(
+        &self,
+        py: Python<'_>,
+        translate: &Bound<'_, PyAny>,
+        orient: Option<&Bound<'_, PyAny>>,
+        scale: Option<&Bound<'_, PyAny>>,
+        time: Option<f64>,
+    ) -> PyResult<()> {
+        let t = doubles::<3>(py, translate, "translate")?;
+        let o = orient.map_or(Ok([1.0, 0.0, 0.0, 0.0]), |o| doubles::<4>(py, o, "orient"))?;
+        let sc = scale.map_or(Ok([1.0; 3]), |v| doubles::<3>(py, v, "scale"))?;
+        self.with(py, |s, p| s.set_trs(p, t, o, sc, time))
+    }
+
+    #[pyo3(signature = (points, face_vertex_counts, face_vertex_indices, time = None))]
+    fn set_mesh(
+        &self,
+        py: Python<'_>,
+        points: &Bound<'_, PyAny>,
+        face_vertex_counts: &Bound<'_, PyAny>,
+        face_vertex_indices: &Bound<'_, PyAny>,
+        time: Option<f64>,
+    ) -> PyResult<()> {
+        let points = from_py(py, points, "point3f[]")?;
+        let counts = from_py(py, face_vertex_counts, "int[]")?;
+        let indices = from_py(py, face_vertex_indices, "int[]")?;
+        self.with(py, |s, p| {
+            s.set_mesh(
+                p,
+                points.as_slice().unwrap_or(&[]),
+                counts.as_slice().unwrap_or(&[]),
+                indices.as_slice().unwrap_or(&[]),
+                time,
+            )
+        })
+    }
+
+    #[pyo3(signature = (name, type_name, value, interpolation = "constant", indices = None, element_size = 0, time = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn set_primvar(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        type_name: &str,
+        value: &Bound<'_, PyAny>,
+        interpolation: &str,
+        indices: Option<&Bound<'_, PyAny>>,
+        element_size: i32,
+        time: Option<f64>,
+    ) -> PyResult<()> {
+        let attr = if name.starts_with("primvars:") {
+            name.to_owned()
+        } else {
+            format!("primvars:{name}")
+        };
+        let declared = self.with(py, |s, p| s.declared_type(p, &attr))?;
+        let value = from_py(py, value, declared.as_deref().unwrap_or(type_name))?;
+        let indices = indices.map(|i| from_py(py, i, "int[]")).transpose()?;
+        let interpolation = self::interpolation(interpolation)?;
+        self.with(py, |s, p| {
+            s.set_primvar(
+                p,
+                &attr,
+                type_name,
+                &value,
+                interpolation,
+                indices.as_ref().map(|i| i.as_slice().unwrap_or(&[])),
+                element_size,
+                time,
+            )
+        })
+    }
+
+    fn remove_api(&self, py: Python<'_>, schema: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.remove_api(p, schema))
+    }
+
+    fn add_target(&self, py: Python<'_>, name: &str, target: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.add_target(p, name, target))
+    }
+
+    fn rename(&self, py: Python<'_>, new_name: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.rename_prim(p, new_name))
+    }
+
+    fn reparent(&self, py: Python<'_>, new_parent: PyRef<'_, Prim>) -> PyResult<()> {
+        if !new_parent.stage.bind(py).is(self.stage.bind(py)) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "prim belongs to a different stage",
+            ));
+        }
+        let parent = new_parent.handle;
+        self.with(py, |s, p| s.reparent_prim(p, parent))
+    }
+
+    fn edit_variant(&self, py: Python<'_>, variant_set: &str, variant: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.edit_variant(p, variant_set, variant))
+    }
+
+    #[getter]
+    fn variant_sets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let sets = self.with(py, |s, p| s.variant_sets(p))?;
+        let out = PyDict::new(py);
+        for (name, variants) in sets {
+            out.set_item(name, variants)?;
+        }
+        Ok(out)
+    }
+
+    #[pyo3(signature = (material, purpose = ""))]
+    fn bind_material(&self, py: Python<'_>, material: PyRef<'_, Prim>, purpose: &str) -> PyResult<()> {
+        if !material.stage.bind(py).is(self.stage.bind(py)) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "prim belongs to a different stage",
+            ));
+        }
+        let target = material.handle;
+        self.with(py, |s, p| s.bind_material(p, target, purpose))
+    }
+
     fn __eq__(&self, py: Python<'_>, other: &Prim) -> bool {
         self.stage.bind(py).is(other.stage.bind(py)) && self.handle == other.handle
     }
@@ -1036,6 +1577,7 @@ fn features() -> Vec<&'static str> {
         (core::Feature::Vol, "vol"),
         (core::Feature::Media, "media"),
         (core::Feature::Semantics, "semantics"),
+        (core::Feature::Write, "write"),
     ]
     .into_iter()
     .filter(|(f, _)| core::has_feature(*f))
@@ -1054,7 +1596,10 @@ fn _tinyusd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("UnsupportedTypeError", py.get_type::<UnsupportedTypeError>())?;
     m.add("FeatureDisabledError", py.get_type::<FeatureDisabledError>())?;
     m.add("SchemaError", py.get_type::<SchemaError>())?;
+    m.add("InvalidValueError", py.get_type::<InvalidValueError>())?;
+    m.add("WriteError", py.get_type::<WriteError>())?;
     m.add_class::<Stage>()?;
+    m.add_class::<EditBatch>()?;
     m.add_class::<Prim>()?;
     m.add_class::<AssetPath>()?;
     m.add_class::<AttributeInfo>()?;
@@ -1227,4 +1772,316 @@ fn physics_dict<'py>(py: Python<'py>, stage: &Bound<'py, Stage>, p: &core::Physi
     out.set_item("articulations", list)?;
     out.set_item("diagnostics", p.diagnostics.clone())?;
     Ok(out)
+}
+
+mod physics_input {
+    use pyo3::exceptions::PyValueError;
+    use pyo3::prelude::*;
+    use pyo3::types::PyDict;
+    use tinyusd_core as core;
+
+    use super::{Prim, Stage, own};
+
+    struct Reader<'a, 'py> {
+        stage: &'a Bound<'py, Stage>,
+    }
+
+    impl<'py> Reader<'_, 'py> {
+        fn get<T: for<'a> FromPyObject<'a, 'py>>(&self, d: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<T>> {
+            match d.get_item(key)? {
+                Some(v) if !v.is_none() => match v.extract::<T>() {
+                    Ok(x) => Ok(Some(x)),
+                    Err(e) => {
+                        let e: PyErr = e.into();
+                        Err(PyValueError::new_err(format!("{key}: {e}")))
+                    }
+                },
+                _ => Ok(None),
+            }
+        }
+
+        fn set<T: for<'a> FromPyObject<'a, 'py>>(
+            &self,
+            d: &Bound<'py, PyDict>,
+            key: &str,
+            out: &mut T,
+        ) -> PyResult<()> {
+            if let Some(v) = self.get(d, key)? {
+                *out = v;
+            }
+            Ok(())
+        }
+
+        fn prim(&self, obj: &Bound<'py, PyAny>) -> PyResult<core::Prim> {
+            let prim: PyRef<'_, Prim> = obj.extract()?;
+            own(self.stage, &prim)
+        }
+
+        fn required_prim(&self, d: &Bound<'py, PyDict>) -> PyResult<core::Prim> {
+            let obj = d
+                .get_item("prim")?
+                .ok_or_else(|| PyValueError::new_err("every physics item needs its 'prim'"))?;
+            self.prim(&obj)
+        }
+
+        fn opt_prim(&self, d: &Bound<'py, PyDict>, key: &str, out: &mut Option<core::Prim>) -> PyResult<()> {
+            match d.get_item(key)? {
+                Some(v) if v.is_none() => *out = None,
+                Some(v) => *out = Some(self.prim(&v)?),
+                None => {}
+            }
+            Ok(())
+        }
+
+        fn prims(&self, d: &Bound<'py, PyDict>, key: &str, out: &mut Vec<core::Prim>) -> PyResult<()> {
+            if let Some(list) = d.get_item(key)? {
+                *out = list.try_iter()?.map(|p| self.prim(&p?)).collect::<PyResult<_>>()?;
+            }
+            Ok(())
+        }
+
+        fn named<T: Copy + std::fmt::Debug>(
+            &self,
+            d: &Bound<'py, PyDict>,
+            key: &str,
+            all: &[T],
+            out: &mut T,
+        ) -> PyResult<()> {
+            if let Some(name) = self.get::<String>(d, key)? {
+                *out = *all
+                    .iter()
+                    .find(|v| format!("{v:?}") == name)
+                    .ok_or_else(|| PyValueError::new_err(format!("{key}: unknown value {name:?}")))?;
+            }
+            Ok(())
+        }
+
+        fn dicts(&self, d: &Bound<'py, PyDict>, key: &str) -> PyResult<Vec<Bound<'py, PyDict>>> {
+            match d.get_item(key)? {
+                None => Ok(Vec::new()),
+                Some(list) => list
+                    .try_iter()?
+                    .map(|item| {
+                        item?
+                            .cast_into::<PyDict>()
+                            .map_err(|_| PyValueError::new_err(format!("{key} must hold dicts")))
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    const AXES: [core::Axis; 3] = [core::Axis::X, core::Axis::Y, core::Axis::Z];
+    const DOFS: [core::Dof; 7] = [
+        core::Dof::Distance,
+        core::Dof::TransX,
+        core::Dof::TransY,
+        core::Dof::TransZ,
+        core::Dof::RotX,
+        core::Dof::RotY,
+        core::Dof::RotZ,
+    ];
+
+    pub(crate) fn scene(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::PhysicsScene> {
+        let r = Reader { stage };
+        let mut x = core::PhysicsScene::new(r.required_prim(d)?);
+        r.set(d, "gravity_direction", &mut x.gravity_direction)?;
+        r.set(d, "gravity_magnitude", &mut x.gravity_magnitude)?;
+        Ok(x)
+    }
+
+    pub(crate) fn group(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::CollisionGroup> {
+        let r = Reader { stage };
+        let mut x = core::CollisionGroup::new(r.required_prim(d)?);
+        r.set(d, "invert_filtered_groups", &mut x.invert_filtered_groups)?;
+        r.prims(d, "filtered_groups", &mut x.filtered_groups)?;
+        r.set(d, "merge_group_name", &mut x.merge_group_name)?;
+        Ok(x)
+    }
+
+    pub(crate) fn material(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::PhysicsMaterial> {
+        let r = Reader { stage };
+        let mut x = core::PhysicsMaterial::new(r.required_prim(d)?);
+        r.set(d, "static_friction", &mut x.static_friction)?;
+        r.set(d, "dynamic_friction", &mut x.dynamic_friction)?;
+        r.set(d, "restitution", &mut x.restitution)?;
+        r.set(d, "density", &mut x.density)?;
+        Ok(x)
+    }
+
+    pub(crate) fn shape(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::Shape> {
+        use core::ShapeKind as K;
+        let r = Reader { stage };
+        let mut x = core::Shape::new(r.required_prim(d)?);
+        r.prims(d, "materials", &mut x.materials)?;
+        r.prims(d, "simulation_owners", &mut x.simulation_owners)?;
+        r.prims(d, "filtered_collisions", &mut x.filtered_collisions)?;
+        r.prims(d, "collision_groups", &mut x.collision_groups)?;
+        r.set(d, "collision_enabled", &mut x.collision_enabled)?;
+        let kinds = [
+            K::Sphere,
+            K::Cube,
+            K::Capsule,
+            K::Capsule1,
+            K::Cylinder,
+            K::Cylinder1,
+            K::Cone,
+            K::Plane,
+            K::Mesh,
+            K::SpherePoints,
+            K::Custom,
+        ];
+        r.named(d, "kind", &kinds, &mut x.kind)?;
+        r.set(d, "mesh_approximation", &mut x.mesh_approximation)?;
+        Ok(x)
+    }
+
+    pub(crate) fn body(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::RigidBody> {
+        let r = Reader { stage };
+        let mut x = core::RigidBody::new(r.required_prim(d)?);
+        r.prims(d, "filtered_collisions", &mut x.filtered_collisions)?;
+        r.prims(d, "simulation_owners", &mut x.simulation_owners)?;
+        r.set(d, "position", &mut x.position)?;
+        r.set(d, "rotation", &mut x.rotation)?;
+        r.set(d, "scale", &mut x.scale)?;
+        r.set(d, "enabled", &mut x.enabled)?;
+        r.set(d, "kinematic", &mut x.kinematic)?;
+        r.set(d, "starts_asleep", &mut x.starts_asleep)?;
+        r.set(d, "linear_velocity", &mut x.linear_velocity)?;
+        r.set(d, "angular_velocity", &mut x.angular_velocity)?;
+        Ok(x)
+    }
+
+    pub(crate) fn joint(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::Joint> {
+        use core::JointKind as K;
+        let r = Reader { stage };
+        let mut kind = K::Fixed;
+        let kinds = [
+            K::Fixed,
+            K::Revolute,
+            K::Prismatic,
+            K::Spherical,
+            K::Distance,
+            K::D6,
+            K::Custom,
+        ];
+        r.named(d, "kind", &kinds, &mut kind)?;
+        let mut x = core::Joint::new(r.required_prim(d)?, kind);
+        r.set(d, "type_name", &mut x.type_name)?;
+        r.opt_prim(d, "body0", &mut x.body0)?;
+        r.opt_prim(d, "body1", &mut x.body1)?;
+        r.set(d, "local_pos0", &mut x.local_pos0)?;
+        r.set(d, "local_rot0", &mut x.local_rot0)?;
+        r.set(d, "local_pos1", &mut x.local_pos1)?;
+        r.set(d, "local_rot1", &mut x.local_rot1)?;
+        r.set(d, "enabled", &mut x.enabled)?;
+        r.set(d, "collision_enabled", &mut x.collision_enabled)?;
+        r.set(d, "break_force", &mut x.break_force)?;
+        r.set(d, "break_torque", &mut x.break_torque)?;
+        r.set(d, "exclude_from_articulation", &mut x.exclude_from_articulation)?;
+        r.named(d, "axis", &AXES, &mut x.axis)?;
+        r.set(d, "min_distance_enabled", &mut x.min_distance_enabled)?;
+        r.set(d, "max_distance_enabled", &mut x.max_distance_enabled)?;
+        for l in r.dicts(d, "limits")? {
+            let mut limit = core::JointLimit {
+                dof: core::Dof::Distance,
+                enabled: true,
+                lower: f32::NEG_INFINITY,
+                upper: f32::INFINITY,
+            };
+            r.named(&l, "dof", &DOFS, &mut limit.dof)?;
+            r.set(&l, "enabled", &mut limit.enabled)?;
+            r.set(&l, "lower", &mut limit.lower)?;
+            r.set(&l, "upper", &mut limit.upper)?;
+            x.limits.push(limit);
+        }
+        for v in r.dicts(d, "drives")? {
+            let mut drive = core::JointDrive {
+                dof: core::Dof::Distance,
+                target_position: 0.0,
+                target_velocity: 0.0,
+                force_limit: f32::INFINITY,
+                stiffness: 0.0,
+                damping: 0.0,
+                acceleration: false,
+            };
+            r.named(&v, "dof", &DOFS, &mut drive.dof)?;
+            r.set(&v, "target_position", &mut drive.target_position)?;
+            r.set(&v, "target_velocity", &mut drive.target_velocity)?;
+            r.set(&v, "force_limit", &mut drive.force_limit)?;
+            r.set(&v, "stiffness", &mut drive.stiffness)?;
+            r.set(&v, "damping", &mut drive.damping)?;
+            r.set(&v, "acceleration", &mut drive.acceleration)?;
+            x.drives.push(drive);
+        }
+        Ok(x)
+    }
+
+    pub(crate) fn articulation(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::Articulation> {
+        let r = Reader { stage };
+        let mut x = core::Articulation::new(r.required_prim(d)?);
+        r.prims(d, "filtered_collisions", &mut x.filtered_collisions)?;
+        Ok(x)
+    }
+
+    pub(crate) fn physics(stage: &Bound<'_, Stage>, d: &Bound<'_, PyDict>) -> PyResult<core::Physics> {
+        let r = Reader { stage };
+        let mut p = core::Physics {
+            meters_per_unit: 1.0,
+            kilograms_per_unit: 1.0,
+            ..core::Physics::default()
+        };
+        r.set(d, "meters_per_unit", &mut p.meters_per_unit)?;
+        r.set(d, "kilograms_per_unit", &mut p.kilograms_per_unit)?;
+        r.set(d, "si_units", &mut p.si_units)?;
+        p.scenes = r
+            .dicts(d, "scenes")?
+            .iter()
+            .map(|x| scene(stage, x))
+            .collect::<PyResult<_>>()?;
+        p.collision_groups = r
+            .dicts(d, "collision_groups")?
+            .iter()
+            .map(|x| group(stage, x))
+            .collect::<PyResult<_>>()?;
+        p.materials = r
+            .dicts(d, "materials")?
+            .iter()
+            .map(|x| material(stage, x))
+            .collect::<PyResult<_>>()?;
+        p.shapes = r
+            .dicts(d, "shapes")?
+            .iter()
+            .map(|x| shape(stage, x))
+            .collect::<PyResult<_>>()?;
+        p.rigid_bodies = r
+            .dicts(d, "rigid_bodies")?
+            .iter()
+            .map(|x| body(stage, x))
+            .collect::<PyResult<_>>()?;
+        p.joints = r
+            .dicts(d, "joints")?
+            .iter()
+            .map(|x| joint(stage, x))
+            .collect::<PyResult<_>>()?;
+        p.articulations = r
+            .dicts(d, "articulations")?
+            .iter()
+            .map(|x| articulation(stage, x))
+            .collect::<PyResult<_>>()?;
+        Ok(p)
+    }
+
+    pub(crate) fn body_mass(d: &Bound<'_, PyDict>, stage: &Bound<'_, Stage>) -> PyResult<core::BodyMass> {
+        let r = Reader { stage };
+        let mut m = core::BodyMass {
+            principal_axes: [1.0, 0.0, 0.0, 0.0],
+            ..core::BodyMass::default()
+        };
+        r.set(d, "mass", &mut m.mass)?;
+        r.set(d, "diagonal_inertia", &mut m.diagonal_inertia)?;
+        r.set(d, "center_of_mass", &mut m.center_of_mass)?;
+        r.set(d, "principal_axes", &mut m.principal_axes)?;
+        Ok(m)
+    }
 }

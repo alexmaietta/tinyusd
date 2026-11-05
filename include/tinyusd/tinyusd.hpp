@@ -6,6 +6,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <limits>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -23,6 +25,7 @@ class Span {
 public:
     constexpr Span() noexcept = default;
     constexpr Span(const T* data, std::size_t size) noexcept : data_(data), size_(size) {}
+    Span(const std::vector<T>& v) noexcept : data_(v.data()), size_(v.size()) {}
 
     constexpr const T* data() const noexcept { return data_; }
     constexpr std::size_t size() const noexcept { return size_; }
@@ -47,6 +50,8 @@ enum class Status : int {
     Panic = TUSD_STATUS_PANIC,
     FeatureDisabled = TUSD_STATUS_FEATURE_DISABLED,
     SchemaFailed = TUSD_STATUS_SCHEMA_FAILED,
+    InvalidValue = TUSD_STATUS_INVALID_VALUE,
+    WriteFailed = TUSD_STATUS_WRITE_FAILED,
 };
 
 enum class Feature : std::uint32_t {
@@ -58,6 +63,13 @@ enum class Feature : std::uint32_t {
     Vol = TUSD_FEATURE_VOL,
     Media = TUSD_FEATURE_MEDIA,
     Semantics = TUSD_FEATURE_SEMANTICS,
+    Write = TUSD_FEATURE_WRITE,
+};
+
+enum class LayerFormat : std::uint32_t {
+    Usda = TUSD_LAYER_FORMAT_USDA,
+    Usdc = TUSD_LAYER_FORMAT_USDC,
+    Usdz = TUSD_LAYER_FORMAT_USDZ,
 };
 
 enum class Interpolation : int {
@@ -198,7 +210,7 @@ constexpr int scalar_kind() noexcept {
     else return 0;
 }
 
-constexpr int scalar_kind_of(ValueType t) noexcept {
+constexpr int value_scalar_kind(ValueType t) noexcept {
     switch (t) {
         case ValueType::Bool:
         case ValueType::UChar: return 1;
@@ -231,6 +243,71 @@ constexpr int scalar_kind_of(ValueType t) noexcept {
         default: return 0;
     }
 }
+
+constexpr std::size_t element_size(ValueType t) noexcept {
+    switch (t) {
+        case ValueType::Bool:
+        case ValueType::UChar: return 1;
+        case ValueType::Half: return 2;
+        case ValueType::Int:
+        case ValueType::UInt:
+        case ValueType::Float:
+        case ValueType::Half2: return 4;
+        case ValueType::Half3: return 6;
+        case ValueType::Int64:
+        case ValueType::UInt64:
+        case ValueType::Double:
+        case ValueType::TimeCode:
+        case ValueType::Int2:
+        case ValueType::Float2:
+        case ValueType::Half4:
+        case ValueType::Quath: return 8;
+        case ValueType::Int3:
+        case ValueType::Float3: return 12;
+        case ValueType::Int4:
+        case ValueType::Float4:
+        case ValueType::Double2:
+        case ValueType::Quatf: return 16;
+        case ValueType::Double3: return 24;
+        case ValueType::Double4:
+        case ValueType::Quatd:
+        case ValueType::Matrix2d: return 32;
+        case ValueType::Matrix3d: return 72;
+        case ValueType::Matrix4d: return 128;
+        default: return 0;
+    }
+}
+
+template <class T>
+struct always_false : std::false_type {};
+
+template <class T>
+constexpr ValueType infer_type() noexcept {
+    if constexpr (std::is_same_v<T, bool>) return ValueType::Bool;
+    else if constexpr (std::is_same_v<T, std::uint8_t>) return ValueType::UChar;
+    else if constexpr (std::is_same_v<T, std::int32_t>) return ValueType::Int;
+    else if constexpr (std::is_same_v<T, std::uint32_t>) return ValueType::UInt;
+    else if constexpr (std::is_same_v<T, std::int64_t>) return ValueType::Int64;
+    else if constexpr (std::is_same_v<T, std::uint64_t>) return ValueType::UInt64;
+    else if constexpr (std::is_same_v<T, float>) return ValueType::Float;
+    else if constexpr (std::is_same_v<T, double>) return ValueType::Double;
+    else if constexpr (std::is_same_v<T, std::array<std::int32_t, 2>>) return ValueType::Int2;
+    else if constexpr (std::is_same_v<T, std::array<std::int32_t, 3>>) return ValueType::Int3;
+    else if constexpr (std::is_same_v<T, std::array<std::int32_t, 4>>) return ValueType::Int4;
+    else if constexpr (std::is_same_v<T, std::array<float, 2>>) return ValueType::Float2;
+    else if constexpr (std::is_same_v<T, std::array<float, 3>>) return ValueType::Float3;
+    else if constexpr (std::is_same_v<T, std::array<float, 4>>) return ValueType::Float4;
+    else if constexpr (std::is_same_v<T, std::array<double, 2>>) return ValueType::Double2;
+    else if constexpr (std::is_same_v<T, std::array<double, 3>>) return ValueType::Double3;
+    else if constexpr (std::is_same_v<T, std::array<double, 4>>) return ValueType::Double4;
+    else if constexpr (std::is_same_v<T, std::array<double, 9>>) return ValueType::Matrix3d;
+    else if constexpr (std::is_same_v<T, std::array<double, 16>>) return ValueType::Matrix4d;
+    else {
+        static_assert(always_false<T>::value,
+                      "no default value type for T; name one, or use Value::token / Value::string for text");
+        return ValueType::Empty;
+    }
+}
 }
 
 class Value {
@@ -252,7 +329,7 @@ public:
         using Scalar = std::remove_cv_t<std::remove_all_extents_t<T>>;
         constexpr int kind = detail::scalar_kind<Scalar>();
         if constexpr (kind != 0) {
-            if (detail::scalar_kind_of(type()) != kind) return {};
+            if (detail::value_scalar_kind(type()) != kind) return {};
         }
         const auto b = bytes();
         if (b.empty() || b.size() % sizeof(T) != 0) return {};
@@ -285,10 +362,86 @@ public:
         return s ? std::string_view(s) : std::string_view();
     }
 
+    template <class T>
+    Value& set(ValueType type, const T* data, std::size_t count, bool is_array = true) {
+        static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+        using Scalar = std::remove_cv_t<std::remove_all_extents_t<typename array_scalar<T>::type>>;
+        constexpr int kind = detail::scalar_kind<Scalar>();
+        if constexpr (kind != 0) {
+            if (detail::value_scalar_kind(type) != kind) {
+                throw Error(Status::InvalidValue, "the C++ type does not match the value type's scalar");
+            }
+        }
+        const std::size_t size = detail::element_size(type);
+        const std::size_t bytes = count * sizeof(T);
+        if (size == 0 || bytes % size != 0) {
+            throw Error(Status::InvalidValue, "the data is not a whole number of elements of the value type");
+        }
+        detail::check(
+            tusd_value_set_data(value_.get(), static_cast<std::uint32_t>(type), is_array, data, bytes / size));
+        return *this;
+    }
+
+    template <class T>
+    Value& set(ValueType type, const std::vector<T>& items) {
+        return set(type, items.data(), items.size(), true);
+    }
+
+    template <class T>
+    Value& set(const std::vector<T>& items) {
+        return set(detail::infer_type<T>(), items.data(), items.size(), true);
+    }
+
+    template <class T>
+    Value& set_scalar(ValueType type, const T& item) {
+        return set(type, &item, 1, false);
+    }
+
+    template <class T>
+    Value& set_scalar(const T& item) {
+        return set(detail::infer_type<T>(), &item, 1, false);
+    }
+
+    Value& set_strings(ValueType type, const std::vector<std::string>& items, bool is_array = true) {
+        std::vector<const char*> raw;
+        raw.reserve(items.size());
+        for (const auto& s : items) raw.push_back(s.c_str());
+        detail::check(tusd_value_set_strings(value_.get(), static_cast<std::uint32_t>(type), is_array, raw.data(),
+                                             raw.size()));
+        return *this;
+    }
+
+    template <class T>
+    static Value of(const T& item) {
+        Value v;
+        v.set_scalar(item);
+        return v;
+    }
+    template <class T>
+    static Value of(const std::vector<T>& items) {
+        Value v;
+        v.set(items);
+        return v;
+    }
+    static Value token(const std::string& s) { return Value().set_strings(ValueType::Token, {s}, false).take(); }
+    static Value string(const std::string& s) { return Value().set_strings(ValueType::String, {s}, false).take(); }
+    static Value asset(const std::string& s) { return Value().set_strings(ValueType::Asset, {s}, false).take(); }
+    static Value tokens(const std::vector<std::string>& s) { return Value().set_strings(ValueType::Token, s).take(); }
+
     TusdValue* raw() noexcept { return value_.get(); }
     const TusdValue* raw() const noexcept { return value_.get(); }
 
 private:
+    template <class T>
+    struct array_scalar {
+        using type = T;
+    };
+    template <class T, std::size_t N>
+    struct array_scalar<std::array<T, N>> {
+        using type = T;
+    };
+    Value take() { return std::move(*this); }
+
     std::unique_ptr<TusdValue, detail::ValueDeleter> value_;
 };
 
@@ -298,6 +451,12 @@ public:
     virtual std::optional<std::string> resolve(std::string_view asset_path,
                                                std::optional<std::string_view> anchor) = 0;
     virtual bool read(std::string_view resolved_path, std::vector<std::uint8_t>& out) = 0;
+    virtual bool write(std::string_view resolved_path, const std::uint8_t* data, std::size_t size) {
+        (void)resolved_path;
+        (void)data;
+        (void)size;
+        return false;
+    }
 };
 
 struct OpenOptions {
@@ -337,7 +496,44 @@ inline bool read_trampoline(void* user_data, const char* resolved_path, TusdOutp
     return false;
 }
 
+inline bool write_trampoline(void* user_data, const char* resolved_path, const std::uint8_t* data, std::size_t size,
+                             TusdOutput* out) {
+    try {
+        auto& resolver = *static_cast<std::shared_ptr<Resolver>*>(user_data);
+        return resolver->write(resolved_path, data, size);
+    } catch (const std::exception& e) {
+        tusd_output_set_error(out, e.what());
+    } catch (...) {
+    }
+    return false;
+}
+
 inline void release_trampoline(void* user_data) { delete static_cast<std::shared_ptr<Resolver>*>(user_data); }
+
+struct RawOptions {
+    TusdOpenOptions raw;
+    TusdResolverCallbacks callbacks{};
+    std::vector<const char*> schema_paths;
+
+    explicit RawOptions(const OpenOptions& options) {
+        tusd_open_options_init(&raw);
+        raw.load_payloads = options.load_payloads;
+        if (options.resolver) {
+            callbacks.struct_size = sizeof(TusdResolverCallbacks);
+            callbacks.user_data = new std::shared_ptr<Resolver>(options.resolver);
+            callbacks.resolve = &resolve_trampoline;
+            callbacks.read = &read_trampoline;
+            callbacks.write = &write_trampoline;
+            callbacks.release = &release_trampoline;
+            raw.resolver = &callbacks;
+        }
+        for (const auto& p : options.schema_paths) schema_paths.push_back(p.c_str());
+        raw.schema_paths = schema_paths.data();
+        raw.schema_path_count = schema_paths.size();
+    }
+    RawOptions(const RawOptions&) = delete;
+    RawOptions& operator=(const RawOptions&) = delete;
+};
 }
 
 struct TimeRange {
@@ -470,9 +666,128 @@ public:
         return found;
     }
 
+    void set(const std::string& attribute, const Value& value, std::optional<double> time = std::nullopt) const {
+        const double t = time.value_or(0.0);
+        detail::check(tusd_attribute_set(stage_, handle_, attribute.c_str(), time ? &t : nullptr, value.raw()));
+    }
+    template <class T>
+    void set(const std::string& attribute, const T& value, std::optional<double> time = std::nullopt) const {
+        set(attribute, Value::of(value), time);
+    }
+    template <class T>
+    void set(const std::string& attribute, const std::vector<T>& values,
+             std::optional<double> time = std::nullopt) const {
+        set(attribute, Value::of(values), time);
+    }
+    void create_attribute(const std::string& name, const std::string& type_name, bool uniform = false) const {
+        detail::check(tusd_attribute_create(stage_, handle_, name.c_str(), type_name.c_str(), uniform));
+    }
+    void block(const std::string& attribute) const {
+        detail::check(tusd_attribute_block(stage_, handle_, attribute.c_str()));
+    }
+    void clear(const std::string& attribute) const {
+        detail::check(tusd_attribute_clear(stage_, handle_, attribute.c_str()));
+    }
+    void set_connections(const std::string& attribute, const std::vector<std::string>& targets) const {
+        auto raw = c_strings(targets);
+        detail::check(tusd_attribute_set_connections(stage_, handle_, attribute.c_str(), raw.data(), raw.size()));
+    }
+    void set_targets(const std::string& relationship, const std::vector<std::string>& targets) const {
+        auto raw = c_strings(targets);
+        detail::check(tusd_relationship_set_targets(stage_, handle_, relationship.c_str(), raw.data(), raw.size()));
+    }
+    void apply_api(const std::string& schema) const {
+        detail::check(tusd_prim_apply_api(stage_, handle_, schema.c_str()));
+    }
+    void set_type_name(const std::string& type_name) const {
+        detail::check(tusd_prim_set_type_name(stage_, handle_, type_name.c_str()));
+    }
+    void set_active(bool active) const { detail::check(tusd_prim_set_active(stage_, handle_, active)); }
+    void set_kind(const std::string& kind) const { detail::check(tusd_prim_set_kind(stage_, handle_, kind.c_str())); }
+    void set_instanceable(bool instanceable) const {
+        detail::check(tusd_prim_set_instanceable(stage_, handle_, instanceable));
+    }
+    void add_reference(const std::string& asset_path, const std::string& prim_path = "") const {
+        detail::check(tusd_prim_add_reference(stage_, handle_, asset_path.c_str(), prim_path.c_str()));
+    }
+    void add_payload(const std::string& asset_path, const std::string& prim_path = "") const {
+        detail::check(tusd_prim_add_payload(stage_, handle_, asset_path.c_str(), prim_path.c_str()));
+    }
+    void add_inherit(const std::string& path) const {
+        detail::check(tusd_prim_add_inherit(stage_, handle_, path.c_str()));
+    }
+    void add_specialize(const std::string& path) const {
+        detail::check(tusd_prim_add_specialize(stage_, handle_, path.c_str()));
+    }
+    void set_variant_selection(const std::string& variant_set, const std::string& variant) const {
+        detail::check(tusd_prim_set_variant_selection(stage_, handle_, variant_set.c_str(), variant.c_str()));
+    }
+
+    void set_local_transform(const std::array<double, 16>& matrix, std::optional<double> time = std::nullopt) const {
+        const double t = time.value_or(0.0);
+        detail::check(tusd_prim_set_local_transform(stage_, handle_, matrix.data(), time ? &t : nullptr));
+    }
+    void set_world_transform(const std::array<double, 16>& matrix, std::optional<double> time = std::nullopt) const {
+        const double t = time.value_or(0.0);
+        detail::check(tusd_prim_set_world_transform(stage_, handle_, matrix.data(), time ? &t : nullptr));
+    }
+    void set_trs(const std::array<double, 3>& translate, const std::array<double, 4>& orient,
+                 const std::array<double, 3>& scale, std::optional<double> time = std::nullopt) const {
+        const double t = time.value_or(0.0);
+        detail::check(tusd_prim_set_trs(stage_, handle_, translate.data(), orient.data(), scale.data(),
+                                        time ? &t : nullptr));
+    }
+    void set_mesh(Span<std::array<float, 3>> points, Span<std::int32_t> face_vertex_counts,
+                  Span<std::int32_t> face_vertex_indices, std::optional<double> time = std::nullopt) const {
+        const double t = time.value_or(0.0);
+        detail::check(tusd_prim_set_mesh(stage_, handle_, points.empty() ? nullptr : points.data()->data(),
+                                         points.size(), face_vertex_counts.data(), face_vertex_counts.size(),
+                                         face_vertex_indices.data(), face_vertex_indices.size(),
+                                         time ? &t : nullptr));
+    }
+    void set_primvar(const std::string& name, const std::string& type_name, const Value& value,
+                     Interpolation interpolation, std::optional<Span<std::int32_t>> indices = std::nullopt,
+                     int element_size = 0, std::optional<double> time = std::nullopt) const {
+        const double t = time.value_or(0.0);
+        detail::check(tusd_prim_set_primvar(stage_, handle_, name.c_str(), type_name.c_str(), value.raw(),
+                                            static_cast<std::uint32_t>(interpolation),
+                                            indices ? indices->data() : nullptr, indices ? indices->size() : 0,
+                                            element_size, time ? &t : nullptr));
+    }
+    void remove_api(const std::string& schema) const {
+        detail::check(tusd_prim_remove_api(stage_, handle_, schema.c_str()));
+    }
+    void add_target(const std::string& relationship, const std::string& target) const {
+        detail::check(tusd_relationship_add_target(stage_, handle_, relationship.c_str(), target.c_str()));
+    }
+    void rename(const std::string& new_name) const {
+        detail::check(tusd_prim_rename(stage_, handle_, new_name.c_str()));
+    }
+    void edit_variant(const std::string& variant_set, const std::string& variant) const {
+        detail::check(tusd_prim_edit_variant(stage_, handle_, variant_set.c_str(), variant.c_str()));
+    }
+    std::vector<std::string> variant_sets() const {
+        return strings([&](TusdStringList* l) { return tusd_prim_variant_names(stage_, handle_, nullptr, l); });
+    }
+    std::vector<std::string> variants(const std::string& variant_set) const {
+        return strings(
+            [&](TusdStringList* l) { return tusd_prim_variant_names(stage_, handle_, variant_set.c_str(), l); });
+    }
+    void bind_material(const Prim& material, const std::string& purpose = "") const {
+        if (material.stage_ != stage_) throw Error(Status::InvalidArgument, "prim belongs to a different stage");
+        detail::check(tusd_prim_bind_material(stage_, handle_, material.handle_, purpose.c_str()));
+    }
+
 private:
     friend class Stage;
     Prim(TusdStage* stage, TusdPrim handle) : stage_(stage), handle_(handle) {}
+
+    static std::vector<const char*> c_strings(const std::vector<std::string>& items) {
+        std::vector<const char*> raw;
+        raw.reserve(items.size());
+        for (const auto& s : items) raw.push_back(s.c_str());
+        return raw;
+    }
 
     static std::vector<Prim> from_list(TusdStage* stage, const TusdPrimList* list) {
         std::vector<Prim> out;
@@ -815,13 +1130,13 @@ struct PhysicsOptions {
 
 struct PhysicsScene {
     Prim prim;
-    Vec3 gravity_direction;
-    float gravity_magnitude;
+    Vec3 gravity_direction{};
+    float gravity_magnitude = -std::numeric_limits<float>::infinity();
 };
 
 struct CollisionGroup {
     Prim prim;
-    bool invert_filtered_groups;
+    bool invert_filtered_groups = false;
     std::vector<Prim> filtered_groups;
     std::string merge_group_name;
     std::vector<Prim> merged_groups;
@@ -829,42 +1144,42 @@ struct CollisionGroup {
 
 struct PhysicsMaterial {
     Prim prim;
-    float static_friction;
-    float dynamic_friction;
-    float restitution;
-    float density;
+    float static_friction = 0;
+    float dynamic_friction = 0;
+    float restitution = 0;
+    float density = 0;
 };
 
 struct Shape {
     Prim prim;
     std::optional<Prim> rigid_body;
-    Vec3 local_pos;
-    Quat local_rot;
-    Vec3 local_scale;
+    Vec3 local_pos{};
+    Quat local_rot{1, 0, 0, 0};
+    Vec3 local_scale{1, 1, 1};
     std::vector<Prim> materials;
     std::vector<Prim> simulation_owners;
     std::vector<Prim> filtered_collisions;
     std::vector<Prim> collision_groups;
-    bool collision_enabled;
-    ShapeKind kind;
-    float radius;
-    float top_radius;
-    float bottom_radius;
-    float half_height;
-    Vec3 half_extents;
-    Axis axis;
+    bool collision_enabled = true;
+    ShapeKind kind = ShapeKind::Sphere;
+    float radius = 0;
+    float top_radius = 0;
+    float bottom_radius = 0;
+    float half_height = 0;
+    Vec3 half_extents{};
+    Axis axis = Axis::Z;
     std::string mesh_approximation;
-    Vec3 mesh_scale;
-    bool double_sided;
+    Vec3 mesh_scale{1, 1, 1};
+    bool double_sided = false;
     std::vector<std::array<float, 4>> sphere_points;
     std::string custom_type;
 };
 
 struct BodyMass {
-    double mass;
-    std::array<double, 3> diagonal_inertia;
-    std::array<double, 3> center_of_mass;
-    std::array<double, 4> principal_axes;
+    double mass = 0;
+    std::array<double, 3> diagonal_inertia{};
+    std::array<double, 3> center_of_mass{};
+    std::array<double, 4> principal_axes{1, 0, 0, 0};
 };
 
 struct RigidBody {
@@ -872,14 +1187,14 @@ struct RigidBody {
     std::vector<Prim> collisions;
     std::vector<Prim> filtered_collisions;
     std::vector<Prim> simulation_owners;
-    Vec3 position;
-    Quat rotation;
-    Vec3 scale;
-    bool enabled;
-    bool kinematic;
-    bool starts_asleep;
-    Vec3 linear_velocity;
-    Vec3 angular_velocity;
+    Vec3 position{};
+    Quat rotation{1, 0, 0, 0};
+    Vec3 scale{1, 1, 1};
+    bool enabled = true;
+    bool kinematic = false;
+    bool starts_asleep = false;
+    Vec3 linear_velocity{};
+    Vec3 angular_velocity{};
 };
 
 struct MassInformation {
@@ -893,41 +1208,41 @@ struct MassInformation {
 using MassInfoFn = std::function<std::optional<MassInformation>(const Prim& collider)>;
 
 struct JointLimit {
-    Dof dof;
-    bool enabled;
-    float lower;
-    float upper;
+    Dof dof = Dof::Distance;
+    bool enabled = true;
+    float lower = -std::numeric_limits<float>::infinity();
+    float upper = std::numeric_limits<float>::infinity();
 };
 
 struct JointDrive {
-    Dof dof;
-    float target_position;
-    float target_velocity;
-    float force_limit;
-    float stiffness;
-    float damping;
-    bool acceleration;
+    Dof dof = Dof::Distance;
+    float target_position = 0;
+    float target_velocity = 0;
+    float force_limit = std::numeric_limits<float>::infinity();
+    float stiffness = 0;
+    float damping = 0;
+    bool acceleration = false;
 };
 
 struct Joint {
     Prim prim;
-    JointKind kind;
+    JointKind kind = JointKind::Fixed;
     std::string type_name;
     std::optional<Prim> rel0, rel1, body0, body1;
-    Vec3 local_pos0;
-    Quat local_rot0;
-    Vec3 local_pos1;
-    Quat local_rot1;
-    bool enabled;
-    bool collision_enabled;
-    float break_force;
-    float break_torque;
-    bool exclude_from_articulation;
-    Axis axis;
+    Vec3 local_pos0{};
+    Quat local_rot0{1, 0, 0, 0};
+    Vec3 local_pos1{};
+    Quat local_rot1{1, 0, 0, 0};
+    bool enabled = true;
+    bool collision_enabled = false;
+    float break_force = std::numeric_limits<float>::infinity();
+    float break_torque = std::numeric_limits<float>::infinity();
+    bool exclude_from_articulation = false;
+    Axis axis = Axis::X;
     std::vector<JointLimit> limits;
     std::vector<JointDrive> drives;
-    bool min_distance_enabled;
-    bool max_distance_enabled;
+    bool min_distance_enabled = false;
+    bool max_distance_enabled = false;
 };
 
 struct Articulation {
@@ -939,9 +1254,9 @@ struct Articulation {
 };
 
 struct Physics {
-    double meters_per_unit;
-    double kilograms_per_unit;
-    bool si_units;
+    double meters_per_unit = 1;
+    double kilograms_per_unit = 1;
+    bool si_units = false;
     std::vector<PhysicsScene> scenes;
     std::vector<CollisionGroup> collision_groups;
     std::vector<PhysicsMaterial> materials;
@@ -956,30 +1271,113 @@ namespace detail {
 struct PhysicsDeleter {
     void operator()(TusdPhysics* p) const noexcept { tusd_physics_free(p); }
 };
+
+struct ViewStore {
+    std::deque<std::vector<TusdPrim>> prims;
+    std::deque<std::vector<float>> floats;
+    std::deque<std::vector<TusdJointLimit>> limits;
+    std::deque<std::vector<TusdJointDrive>> drives;
+
+    const TusdPrim* keep(const std::vector<Prim>& items) {
+        prims.emplace_back();
+        for (const auto& p : items) prims.back().push_back(p.handle());
+        return prims.back().data();
+    }
+    static TusdPrim opt(const std::optional<Prim>& p) { return p ? p->handle() : TUSD_NO_PRIM; }
+};
 }
 
 class Stage {
 public:
     static Stage open(const std::string& path, const OpenOptions& options = {}) {
-        TusdOpenOptions raw;
-        tusd_open_options_init(&raw);
-        raw.load_payloads = options.load_payloads;
-        TusdResolverCallbacks callbacks{};
-        if (options.resolver) {
-            callbacks.struct_size = sizeof(TusdResolverCallbacks);
-            callbacks.user_data = new std::shared_ptr<Resolver>(options.resolver);
-            callbacks.resolve = &detail::resolve_trampoline;
-            callbacks.read = &detail::read_trampoline;
-            callbacks.release = &detail::release_trampoline;
-            raw.resolver = &callbacks;
-        }
-        std::vector<const char*> schema_paths;
-        for (const auto& p : options.schema_paths) schema_paths.push_back(p.c_str());
-        raw.schema_paths = schema_paths.data();
-        raw.schema_path_count = schema_paths.size();
+        detail::RawOptions raw(options);
         TusdStage* stage = nullptr;
-        detail::check(tusd_stage_open(path.c_str(), &raw, &stage));
+        detail::check(tusd_stage_open(path.c_str(), &raw.raw, &stage));
         return Stage(stage);
+    }
+
+    static Stage create_new(const std::string& path, const OpenOptions& options = {}) {
+        detail::RawOptions raw(options);
+        TusdStage* stage = nullptr;
+        detail::check(tusd_stage_create_new(path.c_str(), &raw.raw, &stage));
+        return Stage(stage);
+    }
+
+    static Stage create_in_memory(const OpenOptions& options = {}) {
+        detail::RawOptions raw(options);
+        TusdStage* stage = nullptr;
+        detail::check(tusd_stage_create_in_memory(&raw.raw, &stage));
+        return Stage(stage);
+    }
+
+    void save() const { detail::check(tusd_stage_save(stage_.get())); }
+    void export_to(const std::string& path) const { detail::check(tusd_stage_export(stage_.get(), path.c_str())); }
+    void export_package(const std::string& path) const {
+        detail::check(tusd_stage_export_package(stage_.get(), path.c_str()));
+    }
+    void export_layer(const std::string& layer, const std::string& path) const {
+        detail::check(tusd_stage_export_layer(stage_.get(), layer.c_str(), path.c_str()));
+    }
+    std::vector<std::uint8_t> export_bytes(LayerFormat format,
+                                           const std::optional<std::string>& layer = std::nullopt) const {
+        Value v;
+        detail::check(tusd_stage_export_bytes(stage_.get(), layer ? layer->c_str() : nullptr,
+                                              static_cast<std::uint32_t>(format), v.raw()));
+        auto b = v.bytes();
+        return std::vector<std::uint8_t>(b.begin(), b.end());
+    }
+
+    std::string edit_target() const { return std::string(detail::checked(tusd_stage_edit_target(stage_.get()))); }
+    void set_edit_target(const std::string& layer) const {
+        detail::check(tusd_stage_set_edit_target(stage_.get(), layer.c_str()));
+    }
+    std::string add_sublayer(const std::string& asset_path, bool create = false) const {
+        const char* id = nullptr;
+        detail::check(tusd_stage_add_sublayer(stage_.get(), asset_path.c_str(), create, &id));
+        return id;
+    }
+
+    void begin_edit() const { detail::check(tusd_stage_begin_edit(stage_.get())); }
+    void commit_edit() const { detail::check(tusd_stage_commit_edit(stage_.get())); }
+    void discard_edit() const noexcept { tusd_stage_discard_edit(stage_.get()); }
+
+    Prim define_prim(const std::string& path, const std::string& type_name = "") const {
+        TusdPrim p = 0;
+        detail::check(tusd_stage_define_prim(stage_.get(), path.c_str(), type_name.c_str(), &p));
+        return Prim(stage_.get(), p);
+    }
+    Prim override_prim(const std::string& path) const {
+        TusdPrim p = 0;
+        detail::check(tusd_stage_override_prim(stage_.get(), path.c_str(), &p));
+        return Prim(stage_.get(), p);
+    }
+    bool remove_prim(const Prim& prim) const {
+        own(prim);
+        bool removed = false;
+        detail::check(tusd_prim_remove(stage_.get(), prim.handle(), &removed));
+        return removed;
+    }
+
+    void set_default_prim(const Prim& prim) const {
+        own(prim);
+        detail::check(tusd_stage_set_default_prim(stage_.get(), prim.handle()));
+    }
+    void set_up_axis(const std::string& axis) const {
+        detail::check(tusd_stage_set_up_axis(stage_.get(), axis.c_str()));
+    }
+    void set_meters_per_unit(double meters) const {
+        detail::check(tusd_stage_set_meters_per_unit(stage_.get(), meters));
+    }
+    void set_kilograms_per_unit(double kilograms) const {
+        detail::check(tusd_stage_set_kilograms_per_unit(stage_.get(), kilograms));
+    }
+    void set_time_range(const TimeRange& range) const {
+        TusdTimeRange raw{range.start_time_code, range.end_time_code, range.time_codes_per_second,
+                          range.frames_per_second};
+        detail::check(tusd_stage_set_time_range(stage_.get(), &raw));
+    }
+    void set_documentation(const std::string& text) const {
+        detail::check(tusd_stage_set_documentation(stage_.get(), text.c_str()));
     }
 
     Prim pseudo_root() const noexcept { return Prim(stage_.get(), tusd_stage_pseudo_root()); }
@@ -1222,14 +1620,243 @@ public:
 
     TusdStage* raw() const noexcept { return stage_.get(); }
 
+    void write_physics(const Physics& physics, bool poses = false) const {
+        std::unique_ptr<TusdPhysics, detail::PhysicsDeleter> raw(tusd_physics_new());
+        detail::check(tusd_physics_set_units(raw.get(), physics.meters_per_unit, physics.kilograms_per_unit,
+                                             physics.si_units));
+        detail::ViewStore store;
+        for (const auto& x : physics.scenes) {
+            auto v = view(x);
+            detail::check(tusd_physics_add_scene(raw.get(), &v));
+        }
+        for (const auto& x : physics.collision_groups) {
+            auto v = view(x, store);
+            detail::check(tusd_physics_add_collision_group(raw.get(), &v));
+        }
+        for (const auto& x : physics.materials) {
+            auto v = view(x);
+            detail::check(tusd_physics_add_material(raw.get(), &v));
+        }
+        for (const auto& x : physics.shapes) {
+            auto v = view(x, store);
+            detail::check(tusd_physics_add_shape(raw.get(), &v));
+        }
+        for (const auto& x : physics.rigid_bodies) {
+            auto v = view(x, store);
+            detail::check(tusd_physics_add_rigid_body(raw.get(), &v));
+        }
+        for (const auto& x : physics.joints) {
+            auto v = view(x, store);
+            detail::check(tusd_physics_add_joint(raw.get(), &v));
+        }
+        for (const auto& x : physics.articulations) {
+            auto v = view(x, store);
+            detail::check(tusd_physics_add_articulation(raw.get(), &v));
+        }
+        detail::check(tusd_stage_write_physics(stage_.get(), raw.get(), poses));
+    }
+    void write_physics_scene(const PhysicsScene& scene) const {
+        auto v = view(scene);
+        detail::check(tusd_stage_write_physics_scene(stage_.get(), &v));
+    }
+    void write_collision_group(const CollisionGroup& group) const {
+        detail::ViewStore store;
+        auto v = view(group, store);
+        detail::check(tusd_stage_write_collision_group(stage_.get(), &v));
+    }
+    void write_physics_material(const PhysicsMaterial& material) const {
+        auto v = view(material);
+        detail::check(tusd_stage_write_physics_material(stage_.get(), &v));
+    }
+    void write_shape(const Shape& shape) const {
+        detail::ViewStore store;
+        auto v = view(shape, store);
+        detail::check(tusd_stage_write_shape(stage_.get(), &v));
+    }
+    void write_rigid_body(const RigidBody& body, bool pose = false) const {
+        detail::ViewStore store;
+        auto v = view(body, store);
+        detail::check(tusd_stage_write_rigid_body(stage_.get(), &v, pose));
+    }
+    void write_joint(const Joint& joint) const {
+        detail::ViewStore store;
+        auto v = view(joint, store);
+        detail::check(tusd_stage_write_joint(stage_.get(), &v));
+    }
+    void write_articulation(const Articulation& articulation) const {
+        detail::ViewStore store;
+        auto v = view(articulation, store);
+        detail::check(tusd_stage_write_articulation(stage_.get(), &v));
+    }
+    void write_body_mass(const Prim& body, const BodyMass& mass) const {
+        own(body);
+        TusdBodyMass raw{mass.mass,
+                         {mass.diagonal_inertia[0], mass.diagonal_inertia[1], mass.diagonal_inertia[2]},
+                         {mass.center_of_mass[0], mass.center_of_mass[1], mass.center_of_mass[2]},
+                         {mass.principal_axes[0], mass.principal_axes[1], mass.principal_axes[2],
+                          mass.principal_axes[3]}};
+        detail::check(tusd_prim_write_body_mass(stage_.get(), body.handle(), &raw));
+    }
+
+    void move_prim(const Prim& prim, const Prim& new_parent, const std::string& new_name = "") const {
+        own(prim);
+        own(new_parent);
+        detail::check(tusd_prim_move(stage_.get(), prim.handle(), new_parent.handle(),
+                                     new_name.empty() ? nullptr : new_name.c_str()));
+    }
+
 private:
     explicit Stage(TusdStage* stage) : stage_(stage) {}
+
+    template <std::size_t N>
+    static void copy(float (&out)[N], const std::array<float, N>& in) {
+        for (std::size_t i = 0; i < N; ++i) out[i] = in[i];
+    }
+    TusdPhysicsSceneView view(const PhysicsScene& x) const {
+        own(x.prim);
+        TusdPhysicsSceneView v{};
+        v.prim = x.prim.handle();
+        copy(v.gravity_direction, x.gravity_direction);
+        v.gravity_magnitude = x.gravity_magnitude;
+        return v;
+    }
+    TusdCollisionGroupView view(const CollisionGroup& x, detail::ViewStore& store) const {
+        own(x.prim);
+        TusdCollisionGroupView v{};
+        v.prim = x.prim.handle();
+        v.invert_filtered_groups = x.invert_filtered_groups;
+        v.filtered_groups = store.keep(x.filtered_groups);
+        v.filtered_group_count = x.filtered_groups.size();
+        v.merge_group_name = x.merge_group_name.c_str();
+        return v;
+    }
+    TusdPhysicsMaterialView view(const PhysicsMaterial& x) const {
+        own(x.prim);
+        return TusdPhysicsMaterialView{x.prim.handle(), x.static_friction, x.dynamic_friction, x.restitution,
+                                       x.density};
+    }
+    TusdShapeView view(const Shape& x, detail::ViewStore& store) const {
+        own(x.prim);
+        TusdShapeView v{};
+        v.prim = x.prim.handle();
+        v.rigid_body = detail::ViewStore::opt(x.rigid_body);
+        copy(v.local_pos, x.local_pos);
+        copy(v.local_rot, x.local_rot);
+        copy(v.local_scale, x.local_scale);
+        v.materials = store.keep(x.materials);
+        v.material_count = x.materials.size();
+        v.simulation_owners = store.keep(x.simulation_owners);
+        v.simulation_owner_count = x.simulation_owners.size();
+        v.filtered_collisions = store.keep(x.filtered_collisions);
+        v.filtered_collision_count = x.filtered_collisions.size();
+        v.collision_groups = store.keep(x.collision_groups);
+        v.collision_group_count = x.collision_groups.size();
+        v.collision_enabled = x.collision_enabled;
+        v.kind = static_cast<TusdShapeKind>(x.kind);
+        v.radius = x.radius;
+        v.top_radius = x.top_radius;
+        v.bottom_radius = x.bottom_radius;
+        v.half_height = x.half_height;
+        copy(v.half_extents, x.half_extents);
+        v.axis = static_cast<TusdAxis>(x.axis);
+        v.mesh_approximation = x.mesh_approximation.c_str();
+        copy(v.mesh_scale, x.mesh_scale);
+        v.double_sided = x.double_sided;
+        store.floats.emplace_back();
+        for (const auto& p : x.sphere_points) store.floats.back().insert(store.floats.back().end(), p.begin(), p.end());
+        v.sphere_points = store.floats.back().data();
+        v.sphere_point_count = x.sphere_points.size();
+        v.custom_type = x.custom_type.c_str();
+        return v;
+    }
+    TusdRigidBodyView view(const RigidBody& x, detail::ViewStore& store) const {
+        own(x.prim);
+        TusdRigidBodyView v{};
+        v.prim = x.prim.handle();
+        v.filtered_collisions = store.keep(x.filtered_collisions);
+        v.filtered_collision_count = x.filtered_collisions.size();
+        v.simulation_owners = store.keep(x.simulation_owners);
+        v.simulation_owner_count = x.simulation_owners.size();
+        copy(v.position, x.position);
+        copy(v.rotation, x.rotation);
+        copy(v.scale, x.scale);
+        v.enabled = x.enabled;
+        v.kinematic = x.kinematic;
+        v.starts_asleep = x.starts_asleep;
+        copy(v.linear_velocity, x.linear_velocity);
+        copy(v.angular_velocity, x.angular_velocity);
+        return v;
+    }
+    TusdJointView view(const Joint& x, detail::ViewStore& store) const {
+        own(x.prim);
+        for (const auto* p : {&x.rel0, &x.rel1, &x.body0, &x.body1}) {
+            if (*p) own(**p);
+        }
+        TusdJointView v{};
+        v.prim = x.prim.handle();
+        v.kind = static_cast<TusdJointKind>(x.kind);
+        v.type_name = x.type_name.c_str();
+        v.rel0 = detail::ViewStore::opt(x.rel0);
+        v.rel1 = detail::ViewStore::opt(x.rel1);
+        v.body0 = detail::ViewStore::opt(x.body0);
+        v.body1 = detail::ViewStore::opt(x.body1);
+        copy(v.local_pos0, x.local_pos0);
+        copy(v.local_rot0, x.local_rot0);
+        copy(v.local_pos1, x.local_pos1);
+        copy(v.local_rot1, x.local_rot1);
+        v.enabled = x.enabled;
+        v.collision_enabled = x.collision_enabled;
+        v.break_force = x.break_force;
+        v.break_torque = x.break_torque;
+        v.exclude_from_articulation = x.exclude_from_articulation;
+        v.axis = static_cast<TusdAxis>(x.axis);
+        store.limits.emplace_back();
+        for (const auto& l : x.limits)
+            store.limits.back().push_back({static_cast<TusdDof>(l.dof), l.enabled, l.lower, l.upper});
+        v.limits = store.limits.back().data();
+        v.limit_count = x.limits.size();
+        store.drives.emplace_back();
+        for (const auto& d : x.drives)
+            store.drives.back().push_back({static_cast<TusdDof>(d.dof), d.target_position, d.target_velocity,
+                                           d.force_limit, d.stiffness, d.damping, d.acceleration});
+        v.drives = store.drives.back().data();
+        v.drive_count = x.drives.size();
+        v.min_distance_enabled = x.min_distance_enabled;
+        v.max_distance_enabled = x.max_distance_enabled;
+        return v;
+    }
+    TusdArticulationView view(const Articulation& x, detail::ViewStore& store) const {
+        own(x.prim);
+        TusdArticulationView v{};
+        v.prim = x.prim.handle();
+        v.filtered_collisions = store.keep(x.filtered_collisions);
+        v.filtered_collision_count = x.filtered_collisions.size();
+        return v;
+    }
     void own(const Prim& prim) const {
         if (prim.stage_ != stage_.get()) {
             throw Error(Status::InvalidArgument, "prim belongs to a different stage");
         }
     }
     std::unique_ptr<TusdStage, detail::StageDeleter> stage_;
+};
+
+class EditBatch {
+public:
+    explicit EditBatch(const Stage& stage) : stage_(&stage) { stage.begin_edit(); }
+    EditBatch(const EditBatch&) = delete;
+    EditBatch& operator=(const EditBatch&) = delete;
+    ~EditBatch() {
+        if (stage_) stage_->discard_edit();
+    }
+    void commit() {
+        const Stage* stage = stage_;
+        stage_ = nullptr;
+        stage->commit_edit();
+    }
+
+private:
+    const Stage* stage_;
 };
 
 }

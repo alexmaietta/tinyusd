@@ -1,5 +1,7 @@
 use bytemuck::Pod;
-use openusd::{sdf, vt};
+use openusd::{gf, sdf, tf, vt};
+
+use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
@@ -41,6 +43,52 @@ pub enum BaseType {
 }
 
 impl BaseType {
+    pub fn from_type_name(type_name: &str) -> Option<(Self, bool)> {
+        let (name, array) = match type_name.strip_suffix("[]") {
+            Some(name) => (name, true),
+            None => (type_name, false),
+        };
+        let name = ["point", "normal", "vector", "color", "texCoord"]
+            .iter()
+            .find_map(|role| name.strip_prefix(role))
+            .unwrap_or(name);
+        let base = match name {
+            "bool" => Self::Bool,
+            "uchar" => Self::UChar,
+            "int" => Self::Int,
+            "uint" => Self::UInt,
+            "int64" => Self::Int64,
+            "uint64" => Self::UInt64,
+            "half" => Self::Half,
+            "float" => Self::Float,
+            "double" => Self::Double,
+            "timecode" => Self::TimeCode,
+            "string" => Self::String,
+            "token" => Self::Token,
+            "asset" => Self::Asset,
+            "int2" => Self::Int2,
+            "int3" => Self::Int3,
+            "int4" => Self::Int4,
+            "2h" | "half2" => Self::Half2,
+            "3h" | "half3" => Self::Half3,
+            "4h" | "half4" => Self::Half4,
+            "2f" | "float2" => Self::Float2,
+            "3f" | "float3" => Self::Float3,
+            "4f" | "float4" => Self::Float4,
+            "2d" | "double2" => Self::Double2,
+            "3d" | "double3" => Self::Double3,
+            "4d" | "double4" => Self::Double4,
+            "quath" => Self::Quath,
+            "quatf" => Self::Quatf,
+            "quatd" => Self::Quatd,
+            "matrix2d" => Self::Matrix2d,
+            "matrix3d" => Self::Matrix3d,
+            "matrix4d" | "frame4d" => Self::Matrix4d,
+            _ => return None,
+        };
+        Some((base, array))
+    }
+
     pub const fn is_string_like(self) -> bool {
         matches!(
             self,
@@ -173,6 +221,187 @@ impl Value {
 
     pub fn resolved_paths(&self) -> &[String] {
         &self.resolved
+    }
+
+    pub fn from_bytes(base: BaseType, array: bool, bytes: &[u8]) -> Result<Self> {
+        let size = base.element_size();
+        if size == 0 {
+            return Err(Error::InvalidValue(format!(
+                "{base:?} values are built with Value::from_strings"
+            )));
+        }
+        if !bytes.len().is_multiple_of(size) {
+            return Err(Error::InvalidValue(format!(
+                "{} bytes is not a whole number of {base:?} elements of {size} bytes",
+                bytes.len()
+            )));
+        }
+        let len = bytes.len() / size;
+        if !array && len != 1 {
+            return Err(Error::InvalidValue(format!(
+                "a scalar {base:?} needs one element, got {len}"
+            )));
+        }
+        let mut value = Self::new();
+        value.set_pod(base, array, bytes);
+        value.len = len;
+        Ok(value)
+    }
+
+    pub fn from_slice<T: Pod>(base: BaseType, array: bool, items: &[T]) -> Result<Self> {
+        Self::from_bytes(base, array, bytemuck::cast_slice(items))
+    }
+
+    pub fn from_strings<S: AsRef<str>>(base: BaseType, array: bool, items: &[S]) -> Result<Self> {
+        if !base.is_string_like() {
+            return Err(Error::InvalidValue(format!(
+                "{base:?} values are built with Value::from_bytes"
+            )));
+        }
+        if base == BaseType::Path && !array {
+            return Err(Error::InvalidValue("path values are always arrays".to_owned()));
+        }
+        if !array && items.len() != 1 {
+            return Err(Error::InvalidValue(format!(
+                "a scalar {base:?} needs one item, got {}",
+                items.len()
+            )));
+        }
+        let mut value = Self::new();
+        value.set_strings(base, array, items.iter().map(AsRef::as_ref));
+        Ok(value)
+    }
+
+    pub fn bool(v: bool) -> Self {
+        Self::scalar(BaseType::Bool, &[u8::from(v)])
+    }
+
+    pub fn int(v: i32) -> Self {
+        Self::scalar(BaseType::Int, &[v])
+    }
+
+    pub fn float(v: f32) -> Self {
+        Self::scalar(BaseType::Float, &[v])
+    }
+
+    pub fn double(v: f64) -> Self {
+        Self::scalar(BaseType::Double, &[v])
+    }
+
+    pub fn token(v: &str) -> Self {
+        let mut value = Self::new();
+        value.set_strings(BaseType::Token, false, [v]);
+        value
+    }
+
+    pub fn string(v: &str) -> Self {
+        let mut value = Self::new();
+        value.set_strings(BaseType::String, false, [v]);
+        value
+    }
+
+    pub fn asset(v: &str) -> Self {
+        let mut value = Self::new();
+        value.set_strings(BaseType::Asset, false, [v]);
+        value
+    }
+
+    fn scalar<T: Pod>(base: BaseType, item: &[T; 1]) -> Self {
+        let mut value = Self::new();
+        value.set_pod(base, false, item);
+        value
+    }
+
+    #[cfg_attr(not(feature = "write"), allow(dead_code))]
+    pub(crate) fn to_vt(&self) -> Result<vt::Value> {
+        use BaseType as B;
+        use vt::Value as V;
+        fn pods<T: Pod>(bytes: &[u8]) -> Vec<T> {
+            bytemuck::pod_collect_to_vec(bytes)
+        }
+        let bytes = self.bytes();
+        let a = self.array;
+        macro_rules! pick {
+            ($scalar:ident, $vec:ident, $t:ty) => {{
+                let items = pods::<$t>(bytes);
+                if a { V::$vec(items) } else { V::$scalar(items[0]) }
+            }};
+        }
+        let strings = &self.strings;
+        Ok(match self.base_type() {
+            B::Empty | B::Unsupported => {
+                return Err(Error::InvalidValue(
+                    "an empty or unsupported value cannot be written".to_owned(),
+                ));
+            }
+            B::Bool => {
+                let items: Vec<bool> = bytes.iter().map(|&b| b != 0).collect();
+                if a { V::BoolVec(items) } else { V::Bool(items[0]) }
+            }
+            B::UChar => pick!(Uchar, UcharVec, u8),
+            B::Int => pick!(Int, IntVec, i32),
+            B::UInt => pick!(Uint, UintVec, u32),
+            B::Int64 => pick!(Int64, Int64Vec, i64),
+            B::UInt64 => pick!(Uint64, Uint64Vec, u64),
+            B::Half => pick!(Half, HalfVec, gf::f16),
+            B::Float => pick!(Float, FloatVec, f32),
+            B::Double => pick!(Double, DoubleVec, f64),
+            B::TimeCode => {
+                let items: Vec<sdf::TimeCode> = pods::<f64>(bytes).into_iter().map(sdf::TimeCode).collect();
+                if a {
+                    V::TimeCodeVec(items)
+                } else {
+                    V::TimeCode(items[0])
+                }
+            }
+            B::Int2 => pick!(Vec2i, Vec2iVec, gf::Vec2i),
+            B::Int3 => pick!(Vec3i, Vec3iVec, gf::Vec3i),
+            B::Int4 => pick!(Vec4i, Vec4iVec, gf::Vec4i),
+            B::Half2 => pick!(Vec2h, Vec2hVec, gf::Vec2h),
+            B::Half3 => pick!(Vec3h, Vec3hVec, gf::Vec3h),
+            B::Half4 => pick!(Vec4h, Vec4hVec, gf::Vec4h),
+            B::Float2 => pick!(Vec2f, Vec2fVec, gf::Vec2f),
+            B::Float3 => pick!(Vec3f, Vec3fVec, gf::Vec3f),
+            B::Float4 => pick!(Vec4f, Vec4fVec, gf::Vec4f),
+            B::Double2 => pick!(Vec2d, Vec2dVec, gf::Vec2d),
+            B::Double3 => pick!(Vec3d, Vec3dVec, gf::Vec3d),
+            B::Double4 => pick!(Vec4d, Vec4dVec, gf::Vec4d),
+            B::Quath => pick!(Quath, QuathVec, gf::Quath),
+            B::Quatf => pick!(Quatf, QuatfVec, gf::Quatf),
+            B::Quatd => pick!(Quatd, QuatdVec, gf::Quatd),
+            B::Matrix2d => pick!(Matrix2d, Matrix2dVec, gf::Mat2d),
+            B::Matrix3d => pick!(Matrix3d, Matrix3dVec, gf::Mat3d),
+            B::Matrix4d => pick!(Matrix4d, Matrix4dVec, gf::Mat4d),
+            B::String => {
+                if a {
+                    V::StringVec(strings.clone())
+                } else {
+                    V::String(strings[0].clone())
+                }
+            }
+            B::Token => {
+                let items: Vec<tf::Token> = strings.iter().map(|s| tf::Token::from(s.clone())).collect();
+                if a {
+                    V::TokenVec(items)
+                } else {
+                    V::Token(items[0].clone())
+                }
+            }
+            B::Asset => {
+                let items: Vec<sdf::AssetPath> = strings.iter().map(sdf::AssetPath::new).collect();
+                if a {
+                    V::AssetPathVec(items)
+                } else {
+                    V::AssetPath(items[0].clone())
+                }
+            }
+            B::Path => V::PathVec(
+                strings
+                    .iter()
+                    .map(|s| sdf::Path::new(s).map_err(|e| Error::InvalidPath(format!("{s}: {e}"))))
+                    .collect::<Result<_>>()?,
+            ),
+        })
     }
 
     pub fn set_uchar_array(&mut self, bytes: &[u8]) {
@@ -373,5 +602,22 @@ mod tests {
         assert_eq!(simplify_path("/home/a/part.usda"), "/home/a/part.usda");
         let long = format!(r"\\?\C:\{}", "x".repeat(300));
         assert_eq!(simplify_path(&long), long);
+    }
+}
+
+#[cfg(test)]
+mod type_name_tests {
+    use super::BaseType;
+
+    #[test]
+    fn maps_roles_and_arrays() {
+        assert_eq!(BaseType::from_type_name("point3f[]"), Some((BaseType::Float3, true)));
+        assert_eq!(BaseType::from_type_name("color4d"), Some((BaseType::Double4, false)));
+        assert_eq!(BaseType::from_type_name("texCoord2h[]"), Some((BaseType::Half2, true)));
+        assert_eq!(BaseType::from_type_name("normal3f"), Some((BaseType::Float3, false)));
+        assert_eq!(BaseType::from_type_name("frame4d"), Some((BaseType::Matrix4d, false)));
+        assert_eq!(BaseType::from_type_name("token[]"), Some((BaseType::Token, true)));
+        assert_eq!(BaseType::from_type_name("opaque"), None);
+        assert_eq!(BaseType::from_type_name("dictionary"), None);
     }
 }

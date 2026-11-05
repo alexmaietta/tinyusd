@@ -8,7 +8,10 @@ use std::ptr;
 
 use tinyusd_core as core;
 
-pub const TUSD_ABI_VERSION: u32 = 8;
+mod write;
+pub use write::*;
+
+pub const TUSD_ABI_VERSION: u32 = 9;
 
 pub type TusdPrim = u32;
 
@@ -25,6 +28,8 @@ pub enum TusdStatus {
     Panic = 7,
     FeatureDisabled = 8,
     SchemaFailed = 9,
+    InvalidValue = 10,
+    WriteFailed = 11,
 }
 
 #[repr(C)]
@@ -38,6 +43,7 @@ pub enum TusdFeature {
     Vol = 1 << 5,
     Media = 1 << 6,
     Semantics = 1 << 7,
+    Write = 1 << 8,
 }
 
 #[repr(C)]
@@ -197,6 +203,15 @@ pub struct TusdResolverCallbacks {
         unsafe extern "C" fn(user_data: *mut c_void, resolved_path: *const c_char, out: *mut TusdOutput) -> bool,
     >,
     pub release: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
+    pub write: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            resolved_path: *const c_char,
+            data: *const u8,
+            size: usize,
+            out: *mut TusdOutput,
+        ) -> bool,
+    >,
 }
 
 struct CallbackResolver {
@@ -240,6 +255,61 @@ impl core::AssetResolver for CallbackResolver {
             Err(std::io::Error::new(std::io::ErrorKind::NotFound, message))
         }
     }
+
+    fn write(&self, resolved_path: &str, bytes: &[u8]) -> std::io::Result<()> {
+        let write = self.callbacks.write.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("the resolver has no write callback for '{resolved_path}'"),
+            )
+        })?;
+        let path = CString::new(resolved_path).map_err(std::io::Error::other)?;
+        let mut out = TusdOutput::default();
+        if unsafe {
+            write(
+                self.callbacks.user_data,
+                path.as_ptr(),
+                bytes.as_ptr(),
+                bytes.len(),
+                &mut out,
+            )
+        } {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(
+                out.error
+                    .unwrap_or_else(|| format!("host could not write '{resolved_path}'")),
+            ))
+        }
+    }
+}
+
+unsafe fn read_callbacks(src: *const TusdResolverCallbacks) -> Result<TusdResolverCallbacks, Fail> {
+    let declared = unsafe { ptr::read_unaligned(src.cast::<u32>()) } as usize;
+    if declared < std::mem::offset_of!(TusdResolverCallbacks, write) {
+        if declared >= std::mem::offset_of!(TusdResolverCallbacks, write) - size_of::<usize>() {
+            let mut partial = unsafe { copy_callbacks(src, declared) };
+            partial.resolve = None;
+            partial.read = None;
+            drop(CallbackResolver { callbacks: partial });
+        }
+        return Err(invalid("resolver.struct_size is too small"));
+    }
+    Ok(unsafe { copy_callbacks(src, declared) })
+}
+
+unsafe fn copy_callbacks(src: *const TusdResolverCallbacks, declared: usize) -> TusdResolverCallbacks {
+    let mut copied = TusdResolverCallbacks {
+        struct_size: 0,
+        user_data: ptr::null_mut(),
+        resolve: None,
+        read: None,
+        release: None,
+        write: None,
+    };
+    let len = declared.min(size_of::<TusdResolverCallbacks>());
+    unsafe { ptr::copy_nonoverlapping(src.cast::<u8>(), ptr::from_mut(&mut copied).cast::<u8>(), len) };
+    copied
 }
 
 #[repr(C)]
@@ -361,7 +431,7 @@ fn clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = CString::default());
 }
 
-fn status_of(error: &core::Error) -> TusdStatus {
+fn error_status(error: &core::Error) -> TusdStatus {
     match error {
         core::Error::Open { .. } => TusdStatus::OpenFailed,
         core::Error::InvalidPath(_) => TusdStatus::InvalidPath,
@@ -370,6 +440,8 @@ fn status_of(error: &core::Error) -> TusdStatus {
         core::Error::Usd(_) => TusdStatus::UsdError,
         core::Error::FeatureDisabled(_) => TusdStatus::FeatureDisabled,
         core::Error::Schema { .. } => TusdStatus::SchemaFailed,
+        core::Error::InvalidValue(_) => TusdStatus::InvalidValue,
+        core::Error::Write { .. } => TusdStatus::WriteFailed,
     }
 }
 
@@ -378,7 +450,7 @@ struct Fail(TusdStatus);
 impl From<core::Error> for Fail {
     fn from(e: core::Error) -> Self {
         set_error(e.to_string());
-        Fail(status_of(&e))
+        Fail(error_status(&e))
     }
 }
 
@@ -491,6 +563,46 @@ pub unsafe extern "C" fn tusd_open_options_init(options: *mut TusdOpenOptions) {
     }
 }
 
+unsafe fn open_options(options: *const TusdOpenOptions) -> Result<core::OpenOptions, Fail> {
+    let mut opts = core::OpenOptions::default();
+    if let Some(o) = unsafe { options.as_ref() } {
+        let size = o.struct_size as usize;
+        if size < std::mem::offset_of!(TusdOpenOptions, resolver) {
+            return Err(invalid("options.struct_size is too small; call tusd_open_options_init"));
+        }
+        opts.load_payloads = o.load_payloads;
+        let fits = |end: usize| size >= end;
+        if fits(std::mem::offset_of!(TusdOpenOptions, schema_paths)) && !o.resolver.is_null() {
+            let callbacks = unsafe { read_callbacks(o.resolver) }?;
+            let has_required = callbacks.resolve.is_some() && callbacks.read.is_some();
+            let resolver = CallbackResolver { callbacks };
+            if !has_required {
+                return Err(invalid("resolver.resolve and resolver.read must be set"));
+            }
+            opts.resolver = Some(std::rc::Rc::new(resolver));
+        }
+        if fits(size_of::<TusdOpenOptions>()) && o.schema_path_count > 0 {
+            if o.schema_paths.is_null() {
+                return Err(invalid("schema_paths must not be null when schema_path_count is set"));
+            }
+            let paths = unsafe { std::slice::from_raw_parts(o.schema_paths, o.schema_path_count) };
+            for &p in paths {
+                opts.schema_paths
+                    .push(std::path::PathBuf::from(unsafe { str_arg(p, "schema path") }?));
+            }
+        }
+    }
+    Ok(opts)
+}
+
+fn wrap_stage(stage: core::Stage) -> *mut TusdStage {
+    Box::into_raw(Box::new(TusdStage {
+        stage,
+        paths: Vec::new(),
+        interned: HashMap::new(),
+    }))
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tusd_stage_open(
     path: *const c_char,
@@ -501,43 +613,8 @@ pub unsafe extern "C" fn tusd_stage_open(
         let out = unsafe { out_mut(out_stage, "out_stage") }?;
         *out = ptr::null_mut();
         let path = unsafe { str_arg(path, "path") }?;
-        let mut opts = core::OpenOptions::default();
-        if let Some(o) = unsafe { options.as_ref() } {
-            let size = o.struct_size as usize;
-            if size < std::mem::offset_of!(TusdOpenOptions, resolver) {
-                return Err(invalid("options.struct_size is too small; call tusd_open_options_init"));
-            }
-            opts.load_payloads = o.load_payloads;
-            let fits = |end: usize| size >= end;
-            if fits(std::mem::offset_of!(TusdOpenOptions, schema_paths))
-                && let Some(callbacks) = unsafe { o.resolver.as_ref() }
-            {
-                let resolver = CallbackResolver { callbacks: *callbacks };
-                if (callbacks.struct_size as usize) < size_of::<TusdResolverCallbacks>() {
-                    return Err(invalid("resolver.struct_size is too small"));
-                }
-                if callbacks.resolve.is_none() || callbacks.read.is_none() {
-                    return Err(invalid("resolver.resolve and resolver.read must be set"));
-                }
-                opts.resolver = Some(std::rc::Rc::new(resolver));
-            }
-            if fits(size_of::<TusdOpenOptions>()) && o.schema_path_count > 0 {
-                if o.schema_paths.is_null() {
-                    return Err(invalid("schema_paths must not be null when schema_path_count is set"));
-                }
-                let paths = unsafe { std::slice::from_raw_parts(o.schema_paths, o.schema_path_count) };
-                for &p in paths {
-                    opts.schema_paths
-                        .push(std::path::PathBuf::from(unsafe { str_arg(p, "schema path") }?));
-                }
-            }
-        }
-        let stage = core::Stage::open(path, &opts)?;
-        *out = Box::into_raw(Box::new(TusdStage {
-            stage,
-            paths: Vec::new(),
-            interned: HashMap::new(),
-        }));
+        let opts = unsafe { open_options(options) }?;
+        *out = wrap_stage(core::Stage::open(path, &opts)?);
         Ok(())
     })
 }
@@ -855,7 +932,7 @@ pub unsafe extern "C" fn tusd_prim_prototype(
     guard(|| {
         let outs = unsafe { opt_outs(out_found, out_prim) }?;
         let s = unsafe { stage_mut(stage) }?;
-        let proto = s.stage.prototype_of(prim(p))?.map(handle);
+        let proto = s.stage.prototype(prim(p))?.map(handle);
         write_opt(outs, proto)
     })
 }
@@ -865,7 +942,7 @@ pub unsafe extern "C" fn tusd_prim_instances(stage: *mut TusdStage, p: TusdPrim,
     guard(|| {
         let s = unsafe { stage_mut(stage) }?;
         let out = unsafe { out_mut(out, "out") }?;
-        out.prims = s.stage.instances_of(prim(p))?.into_iter().map(handle).collect();
+        out.prims = s.stage.instances(prim(p))?.into_iter().map(handle).collect();
         Ok(())
     })
 }

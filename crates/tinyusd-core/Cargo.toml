@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["shade", "lux", "skel", "physics", "vol", "media", "semantics"]
+default = ["shade", "lux", "skel", "physics", "vol", "media", "semantics", "write"]
 shade = ["openusd-schemas/shade"]
 lux = ["openusd-schemas/lux"]
 skel = ["openusd-schemas/skel"]
@@ -14,14 +14,20 @@ physics = ["openusd-schemas/physics"]
 vol = ["openusd-schemas/vol"]
 media = ["openusd-schemas/media"]
 semantics = ["openusd-schemas/semantics"]
+write = []
 
 [dependencies]
 openusd.workspace = true
 openusd-schemas = { workspace = true, features = ["geom"] }
 thiserror.workspace = true
-bytemuck = "1"
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
 serde_json = "1"
 
 [dev-dependencies]
+tempfile = "3"
 serde_json = "1"
 half = "2"
+
+[[example]]
+name = "write_bench"
+required-features = ["write"]

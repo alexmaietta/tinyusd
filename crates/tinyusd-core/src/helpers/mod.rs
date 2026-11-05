@@ -1,12 +1,14 @@
 mod instancer;
 mod material;
-mod physics;
+pub(crate) mod physics;
 mod primvar;
 mod skel;
 mod xform;
 
 pub use instancer::Instances;
 pub use material::BoundMaterial;
+#[cfg(feature = "write")]
+pub use physics::write::PhysicsWriteOptions;
 pub use physics::{
     Articulation, Axis, BodyMass, CollisionGroup, Dof, Joint, JointDrive, JointKind, JointLimit, MassInformation,
     Physics, PhysicsMaterial, PhysicsOptions, PhysicsScene, RigidBody, Shape, ShapeKind,
