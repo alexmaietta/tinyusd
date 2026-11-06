@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(tinyusd_consumer LANGUAGES C CXX)
 
-find_package(tinyusd 0.2 CONFIG REQUIRED)
+find_package(tinyusd 0.3 CONFIG REQUIRED)
 
 add_executable(consumer ../cpp/test_query.cpp)
 target_link_libraries(consumer PRIVATE tinyusd::tinyusd)

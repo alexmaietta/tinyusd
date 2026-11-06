@@ -455,7 +455,7 @@ FetchContent_MakeAvailable(tinyusd)
 target_link_libraries(my_app PRIVATE tinyusd::tinyusd)
 ```
 
-To build from source with cargo, leave `TINYUSD_USE_PREBUILT` off (the default). CMake fetches [Corrosion](https://github.com/corrosion-rs/corrosion) and drives cargo for you. An installed copy works with `find_package(tinyusd 0.2 CONFIG REQUIRED)`.
+To build from source with cargo, leave `TINYUSD_USE_PREBUILT` off (the default). CMake fetches [Corrosion](https://github.com/corrosion-rs/corrosion) and drives cargo for you. An installed copy works with `find_package(tinyusd 0.3 CONFIG REQUIRED)`.
 
 | Option | Default | Meaning |
 |---|---|---|
