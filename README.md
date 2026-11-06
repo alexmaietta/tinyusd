@@ -14,7 +14,7 @@ tinyusd is specifically designed for C and C++ projects such as rendering or phy
 
 tinyusd also provides some general helpers to apply USD's rules where they are easy to get wrong by hand. On the read side they follow OpenUSD's own APIs to compute world transforms, flattened primvars, bound materials, point-instancer instances, skinning, bounds and the UsdPhysics scene description, and return plain USD data rather than a format of their own. On the write side they author the same conventions back, so meshes, primvars, material bindings, transforms, skeletons and physics get the schemas, relationships and metadata USD expects. They sit on top of the query and write APIs, so you can always drop down to raw prims and attributes instead. See [Resolution helpers](#resolution-helpers), [Physics](#physics) and [Writing](#writing).
 
-> **Status:** 0.2.0, early. The query API, the resolution helpers (transforms, primvars, materials, point instancers, skeletons and skinning), host file systems and payload loading are complete and checked against OpenUSD on our fixtures and on Pixar's Kitchen Set. The [write API](#writing) is new. Files it writes are checked against OpenUSD too. See [Roadmap](#roadmap).
+> **Status:** 0.3.0, early. The query API, the resolution helpers (transforms, primvars, materials, point instancers, skeletons and skinning), host file systems and payload loading are complete and checked against OpenUSD on our fixtures and on Pixar's Kitchen Set. The [write API](#writing) is new. Files it writes are checked against OpenUSD too. See [Roadmap](#roadmap).
 
 ## At a glance
 
@@ -450,7 +450,7 @@ Open with `load_payloads` off to compose a stage without its payloads, then load
 ```cmake
 include(FetchContent)
 set(TINYUSD_USE_PREBUILT ON)
-FetchContent_Declare(tinyusd GIT_REPOSITORY https://github.com/alexmaietta/tinyusd.git GIT_TAG v0.2.0)
+FetchContent_Declare(tinyusd GIT_REPOSITORY https://github.com/alexmaietta/tinyusd.git GIT_TAG v0.3.0)
 FetchContent_MakeAvailable(tinyusd)
 target_link_libraries(my_app PRIVATE tinyusd::tinyusd)
 ```
@@ -476,7 +476,7 @@ Recipes for vcpkg, Conan and conda are in [packaging/](packaging/), and the [pac
 | Manager | Builds from | Use it |
 |---|---|---|
 | vcpkg | the release archives, so no Rust toolchain is needed | `vcpkg install tinyusd --overlay-ports=packaging/vcpkg/ports` |
-| Conan 2 | source, with cargo from `PATH` | `conan create packaging/conan`, then `requires = "tinyusd/0.2.0"` |
+| Conan 2 | source, with cargo from `PATH` | `conan create packaging/conan`, then `requires = "tinyusd/0.3.0"` |
 | conda | source, with conda-forge's Rust compiler | `rattler-build build --recipe packaging/conda/recipe.yaml -c conda-forge` builds `libtinyusd` |
 
 All three provide the same CMake package, `find_package(tinyusd CONFIG REQUIRED)` with the target `tinyusd::tinyusd`. The vcpkg port follows the triplet's linkage and supports every platform in the table above, except Windows triplets with a static CRT (`x64-windows-static`), because the static archive uses `/MD`. Use `x64-windows-static-md` instead. The Conan recipe has a `shared` option (off by default), a `write` option and a `with_<family>` option for each schema family, and follows `compiler.runtime`. The conda package is the shared library.
