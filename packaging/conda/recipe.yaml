@@ -17,6 +17,8 @@ build:
         - cmake --build _build --parallel ${CPU_COUNT}
         - cmake --install _build
       else:
+        # The openusd git checkout overflows MAX_PATH under the build prefix's .cargo
+        - set "CARGO_HOME=%SystemDrive%\tusd-cargo"
         - cmake -S . -B _build -G Ninja %CMAKE_ARGS% -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%LIBRARY_PREFIX% -DTINYUSD_BUILD_TESTS=OFF -DTINYUSD_BUILD_EXAMPLES=OFF -DTINYUSD_INSTALL=ON
         - if errorlevel 1 exit 1
         - cmake --build _build --parallel %CPU_COUNT%
