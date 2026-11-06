@@ -41,12 +41,19 @@ tests:
       include:
         - tinyusd/tinyusd.h
         - tinyusd/tinyusd.hpp
-      lib:
-        - tinyusd
       files:
         - if: unix
-          then: lib/cmake/tinyusd/tinyusdConfig.cmake
-          else: Library/lib/cmake/tinyusd/tinyusdConfig.cmake
+          then:
+            - lib/cmake/tinyusd/tinyusdConfig.cmake
+          else:
+            - Library/lib/cmake/tinyusd/tinyusdConfig.cmake
+            # Rust names the import library tinyusd.dll.lib, so the lib check's tinyusd.lib doesn't apply
+            - Library/bin/tinyusd.dll
+            - Library/lib/tinyusd.dll.lib
+        - if: linux
+          then: lib/libtinyusd.so
+        - if: osx
+          then: lib/libtinyusd.dylib
   - files:
       source:
         - packaging/test/
