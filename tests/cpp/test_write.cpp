@@ -260,6 +260,71 @@ int main(int argc, char** argv) {
         CHECK((asset.variants("look") == std::vector<std::string>{"blue", "red"}));
         asset.set_variant_selection("look", "red");
         CHECK(scratch.prim("/Asset/Paint")->is_a("Sphere"));
+        CHECK(asset.remove_variant("look", "red"));
+        CHECK(asset.variants("look") == std::vector<std::string>{"blue"});
+
+        asset.set_metadata("hidden", true);
+        asset.set_metadata("displayName", tinyusd::Value::string("Asset"));
+        asset.set_metadata("customData:count", std::int32_t{2});
+        tinyusd::Value v;
+        CHECK(asset.metadata("customData:count", v) && v.as<std::int32_t>() == 2);
+        CHECK(status_of([&] { asset.set_metadata("hidden", 1.0); }) == tinyusd::Status::InvalidValue);
+        asset.clear_metadata("customData");
+        CHECK(!asset.metadata("customData:count", v));
+        asset.create_attribute("tint", "color3f");
+        asset.set_property_metadata("tint", "colorSpace", tinyusd::Value::token("raw"));
+        CHECK(asset.attribute_metadata("tint", "colorSpace", v) && v.strings().at(0) == "raw");
+        asset.clear_property_metadata("tint", "colorSpace");
+        CHECK(asset.remove_property("tint") && !asset.remove_property("tint"));
+        asset.set_targets("r", {"/A", "/B"});
+        asset.remove_target("r", "/A");
+        CHECK(asset.targets("r") == std::vector<std::string>{"/B"});
+
+        auto look = scratch.define_preview_material("/Looks/Red");
+        look.set_preview_input("roughness", 0.25f);
+        look.set_preview_input("diffuseColor", std::array<float, 3>{1, 0, 0});
+        auto tex = look.set_preview_texture("diffuseColor", "./albedo.png");
+        CHECK(tex.path() == "/Looks/Red/DiffuseColorTexture");
+        CHECK(status_of([&] { look.set_preview_input("roughness", 0.25); }) == tinyusd::Status::InvalidValue);
+        asset.bind_material(look);
+        CHECK(asset.bound_material() && asset.bound_material()->path() == "/Looks/Red");
+
+        auto field = scratch.define_prim("/Field");
+        auto tree = scratch.define_prim("/Field/Tree", "Cone");
+        tinyusd::Instances many;
+        many.prototypes = {tree};
+        many.proto_indices = {0, 0};
+        many.transforms = {tinyusd::Matrix4d{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 2, 3, 1},
+                           tinyusd::Matrix4d{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1}};
+        field.set_instances(many);
+        auto back = field.instancer_instances(std::nullopt, false);
+        CHECK(back && back->transforms.size() == 2 && back->transforms[0][13] == 2.0 && back->transforms[1][0] == 2.0);
+        many.proto_indices.pop_back();
+        CHECK(status_of([&] { field.set_instances(many); }) == tinyusd::Status::InvalidArgument);
+
+        const tinyusd::Matrix4d identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        const tinyusd::Matrix4d up{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1};
+        auto root = scratch.define_prim("/Rig", "SkelRoot");
+        auto skel = scratch.define_skeleton("/Rig/Skel", {"hips", "hips/spine"}, {identity, up}, {identity, up});
+        auto walk = scratch.define_prim("/Rig/Skel/Walk");
+        walk.set_skel_animation({"hips", "hips/spine"}, {identity, up}, 1.0);
+        auto skin = scratch.define_prim("/Rig/Body", "Mesh");
+        skin.set_mesh(std::vector<Vec3>{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, std::vector<std::int32_t>{3},
+                      std::vector<std::int32_t>{0, 1, 2});
+        skin.set_skinning(std::vector<std::int32_t>{0, 0, 1}, std::vector<float>{1, 1, 1}, 1, identity);
+        root.bind_skeleton(skel, walk);
+        CHECK(skin.skin_binding(1.0) && skin.skin_binding(1.0)->joint_indices.size() == 3);
+        CHECK(status_of([&] { scratch.define_skeleton("/Bad", {"a/b"}, {identity}); }) == tinyusd::Status::InvalidValue);
+        auto lift = scratch.define_blend_shape("/Rig/Body/Lift", std::vector<Vec3>{{0, 0, 1}}, {},
+                                               std::vector<std::int32_t>{2});
+        lift.set_blend_shape_inbetween("half", 0.5f, std::vector<Vec3>{{0, 0, 0.25f}});
+        skin.set_blend_shapes({"lift"}, {lift});
+        walk.set_blend_shape_weights({"lift"}, {1.0f}, 1.0);
+        CHECK(skin.skin_binding(1.0)->blend_shapes == std::vector<std::string>{"lift"});
+
+        auto clip = scratch.define_prim("/Clip", "Xform");
+        clip.add_reference(data + "/physics_full.usda", "", 24.0, 0.5);
+        clip.remove_reference(data + "/physics_full.usda");
     }
 
     std::puts("ok");

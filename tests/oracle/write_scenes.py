@@ -1,5 +1,7 @@
 import shutil
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +12,7 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 POINTS = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=np.float32)
 
 
-def scene(stage):
+def scene(stage, textures=True):
     world = stage.define_prim("/World", "Xform")
     stage.set_default_prim(world)
     stage.set_up_axis("Z")
@@ -37,16 +39,21 @@ def scene(stage):
     mesh.create_attribute("my:ids", "int64[]")
     mesh.set("my:ids", np.array([1, 2, 3], dtype=np.int64))
 
-    look = stage.define_prim("/World/Looks/Red", "Material")
-    shader = stage.define_prim("/World/Looks/Red/Surface", "Shader")
-    shader.create_attribute("info:id", "token", uniform=True)
-    shader.set("info:id", "UsdPreviewSurface")
-    shader.create_attribute("inputs:diffuseColor", "color3f")
-    shader.set("inputs:diffuseColor", (1, 0, 0))
-    shader.create_attribute("outputs:surface", "token")
-    look.create_attribute("outputs:surface", "token")
-    look.set_connections("outputs:surface", ["/World/Looks/Red/Surface.outputs:surface"])
+    look = stage.define_preview_material("/World/Looks/Red")
+    look.set_preview_input("diffuseColor", (1, 0, 0))
+    look.set_preview_input("roughness", 0.4)
+    if textures:  # a flattened export doesn't carry the images, only export_package does
+        look.set_preview_texture("diffuseColor", "./albedo.png")
+        look.set_preview_texture("normal", "./normal.png")
     mesh.bind_material(look)
+
+    world.set_metadata("displayName", "World")
+    world.set_metadata("customData:pipeline:step", 2)
+    world.set_metadata("assetInfo:name", "world")
+    mesh.set_metadata("hidden", False)
+    mesh.set_property_metadata("my:weights", "displayGroup", "Weights")
+    mesh.set_property_metadata("my:weights", "customData:units", "kg")
+    mesh.set_property_metadata("primvars:displayColor", "colorSpace", "lin_rec709")
 
     body = stage.define_prim("/World/Body", "Cube")
     body.apply_api("PhysicsRigidBodyAPI")
@@ -67,8 +74,81 @@ def scene(stage):
     inst = stage.define_prim("/World/Instance")
     inst.add_reference(prim_path="/Proto")
     inst.set_instanceable(True)
+    late = stage.define_prim("/World/Late")
+    late.add_reference(prim_path="/World/Body", offset=24.0, scale=0.5)
     hidden = stage.define_prim("/World/Hidden", "Xform")
     hidden.set_active(False)
+
+    field = stage.define_prim("/World/Field")
+    pebble = stage.define_prim("/World/Field/Pebble", "Sphere")
+    pebble.set("radius", 0.1)
+    transforms = []
+    for i in range(4):
+        m = np.diag([1.0 + i, 1.0, 1.0, 1.0])
+        m[3, :3] = (i, 0.5 * i, 0)
+        transforms.append(m)
+    field.set_instances([pebble], [0, 0, 0, 0], np.stack(transforms), ids=[3, 1, 4, 1])
+
+    rig = stage.define_prim("/World/Rig", "SkelRoot")
+    joints = ["hips", "hips/spine", "hips/spine/head"]
+    rest = [translate(0, 0, 0), translate(0, 1, 0), translate(0, 1, 0)]
+    bind = [translate(0, 0, 0), translate(0, 1, 0), translate(0, 2, 0)]
+    skel = stage.define_skeleton("/World/Rig/Skel", joints, bind, rest)
+    walk = stage.define_prim("/World/Rig/Skel/Walk")
+    for frame in range(0, 11, 5):
+        bend = np.eye(4)
+        angle = np.radians(frame * 6)
+        bend[0, :2] = (np.cos(angle), np.sin(angle))
+        bend[1, :2] = (-np.sin(angle), np.cos(angle))
+        bend[3, :3] = (0, 1, 0)
+        walk.set_skel_animation(joints, [translate(0, 0, 0), bend, translate(0, 1, 0)], time=frame)
+    body = stage.define_prim("/World/Rig/Body", "Mesh")
+    body.set_mesh(np.array([[0, 0, 0], [0.2, 1, 0], [0, 2, 0], [-0.2, 2.5, 0]], dtype=np.float32), [4], [0, 1, 2, 3])
+    body.set_skinning([0, 1, 1, 2, 2, 1, 2, 2], [1, 0, 0.5, 0.5, 0.8, 0.2, 1, 0], 2, geom_bind_transform=np.eye(4))
+    rig.bind_skeleton(skel, walk)
+    frown = stage.define_blend_shape("/World/Rig/Body/Frown", [(0, -0.2, 0), (0.1, 0, 0)], point_indices=[2, 3])
+    frown.set_blend_shape_inbetween("slight", 0.4, [(0, -0.05, 0), (0, 0, 0)])
+    puff = stage.define_blend_shape("/World/Rig/Body/Puff", [(0.1, 0, 0)] * 4, normal_offsets=[(0, 0, 0)] * 4)
+    body.set_blend_shapes(["frown", "puff"], [frown, puff])
+    for frame in range(0, 11, 5):
+        walk.set_blend_shape_weights(["puff", "frown"], [frame / 10, 0.3 + frame / 20], time=frame)
+
+
+def translate(x, y, z):
+    m = np.eye(4)
+    m[3, :3] = (x, y, z)
+    return m
+
+
+def clips_scene(out):
+    for i in range(2):
+        clip = tinyusd.Stage.create_new(out / f"clip{i}.usda")
+        anim = clip.define_prim("/Anim", "Xform")
+        anim.create_attribute("xformOp:translate", "double3")
+        anim.set("xformOpOrder", ["xformOp:translate"])
+        for t in range(5 * i, 5 * i + 6):
+            anim.set("xformOp:translate", (10 * i + t, 0, 0), time=t)
+        clip.save()
+    stage = tinyusd.Stage.create_new(out / "clips.usda")
+    stage.set_time_range(0, 10, time_codes_per_second=24)
+    stage.set_up_axis("Z")
+    stage.set_meters_per_unit(1.0)
+    world = stage.define_prim("/World", "Xform")
+    stage.set_default_prim(world)
+    ball = stage.define_prim("/World/Ball", "Sphere")
+    ball.create_attribute("xformOp:translate", "double3")
+    ball.set("xformOpOrder", ["xformOp:translate"])
+    ball.set_value_clips(
+        "default",
+        ["./clip0.usda", "./clip1.usda"],
+        "/Anim",
+        [(0, 0), (5, 1)],
+        # A jump in times waits on openusd listing the sample just before it, as OpenUSD does.
+        times=[(0, 0), (10, 10)],
+        manifest_asset_path="./manifest.usda",
+    )
+    ball.export_clip_manifest("default", out / "manifest.usda")
+    stage.save()
 
 
 def physics_scene(stage):
@@ -141,16 +221,42 @@ def variants_and_moves(stage):
     crate.rename("Box")
     stage.move_prim(crate, asset)
 
+    for lod in ("medium", "proxy"):
+        asset.edit_variant("lod", lod)
+        stage.define_prim("/World/Asset/Geo", "Capsule")
+    stage.set_edit_target(root)
+    asset.remove_variant("lod", "proxy")
+    asset.set_variant_selection("lod", "high")
+    asset.create_attribute("scratch", "float")
+    asset.set("scratch", 1.0)
+    asset.remove_property("scratch")
+    asset.set_targets("proxyPrim", ["/World/Weld", "/World/Asset"])
+    asset.remove_target("proxyPrim", "/World/Weld")
+    asset.add_inherit("/_class")
+    asset.remove_inherit("/_class")
+
+
+def png(path):
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    pixels = zlib.compress(b"\x00\x80\x80\xff")
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b""))
+
 
 def main(out):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    png(out / "albedo.png")
+    png(out / "normal.png")
     for name in ["written.usda", "written.usdc"]:
         stage = tinyusd.Stage.create_new(out / name)
         scene(stage)
         stage.save()
     stage = tinyusd.Stage.create_in_memory()
-    scene(stage)
+    scene(stage, textures=False)
     stage.export(out / "flattened.usdz")
 
     shutil.copy(DATA / "physics.usda", out / "robot.usda")
@@ -179,6 +285,8 @@ def main(out):
     rewritten.set_default_prim(rewritten.prim("/World"))
     rewritten.write_physics(rewritten.physics(si_units=True), poses=True)
     rewritten.save()
+
+    clips_scene(out)
 
     stage = tinyusd.Stage.create_new(out / "variants.usda")
     variants_and_moves(stage)

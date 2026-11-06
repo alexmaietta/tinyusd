@@ -743,11 +743,124 @@ public:
     void set_instanceable(bool instanceable) const {
         detail::check(tusd_prim_set_instanceable(stage_, handle_, instanceable));
     }
-    void add_reference(const std::string& asset_path, const std::string& prim_path = "") const {
-        detail::check(tusd_prim_add_reference(stage_, handle_, asset_path.c_str(), prim_path.c_str()));
+    void add_reference(const std::string& asset_path, const std::string& prim_path = "", double offset = 0.0,
+                       double scale = 1.0) const {
+        detail::check(tusd_prim_add_reference_with_offset(stage_, handle_, asset_path.c_str(), prim_path.c_str(),
+                                                          offset, scale));
     }
-    void add_payload(const std::string& asset_path, const std::string& prim_path = "") const {
-        detail::check(tusd_prim_add_payload(stage_, handle_, asset_path.c_str(), prim_path.c_str()));
+    void add_payload(const std::string& asset_path, const std::string& prim_path = "", double offset = 0.0,
+                     double scale = 1.0) const {
+        detail::check(tusd_prim_add_payload_with_offset(stage_, handle_, asset_path.c_str(), prim_path.c_str(),
+                                                        offset, scale));
+    }
+    void remove_reference(const std::string& asset_path, const std::string& prim_path = "") const {
+        detail::check(tusd_prim_remove_reference(stage_, handle_, asset_path.c_str(), prim_path.c_str()));
+    }
+    void remove_payload(const std::string& asset_path, const std::string& prim_path = "") const {
+        detail::check(tusd_prim_remove_payload(stage_, handle_, asset_path.c_str(), prim_path.c_str()));
+    }
+    void remove_inherit(const std::string& path) const {
+        detail::check(tusd_prim_remove_inherit(stage_, handle_, path.c_str()));
+    }
+    void remove_specialize(const std::string& path) const {
+        detail::check(tusd_prim_remove_specialize(stage_, handle_, path.c_str()));
+    }
+    bool remove_variant(const std::string& variant_set, const std::string& variant) const {
+        bool removed = false;
+        detail::check(tusd_prim_remove_variant(stage_, handle_, variant_set.c_str(), variant.c_str(), &removed));
+        return removed;
+    }
+    bool remove_property(const std::string& name) const {
+        bool removed = false;
+        detail::check(tusd_prim_remove_property(stage_, handle_, name.c_str(), &removed));
+        return removed;
+    }
+    void remove_target(const std::string& relationship, const std::string& target) const {
+        detail::check(tusd_relationship_remove_target(stage_, handle_, relationship.c_str(), target.c_str()));
+    }
+    void remove_connection(const std::string& attribute, const std::string& source) const {
+        detail::check(tusd_attribute_remove_connection(stage_, handle_, attribute.c_str(), source.c_str()));
+    }
+    void set_metadata(const std::string& key, const Value& value) const {
+        detail::check(tusd_prim_set_metadata(stage_, handle_, key.c_str(), value.raw()));
+    }
+    template <class T>
+    void set_metadata(const std::string& key, const T& value) const {
+        set_metadata(key, Value::of(value));
+    }
+    void clear_metadata(const std::string& key) const {
+        detail::check(tusd_prim_clear_metadata(stage_, handle_, key.c_str()));
+    }
+    void set_property_metadata(const std::string& property, const std::string& key, const Value& value) const {
+        detail::check(tusd_property_set_metadata(stage_, handle_, property.c_str(), key.c_str(), value.raw()));
+    }
+    template <class T>
+    void set_property_metadata(const std::string& property, const std::string& key, const T& value) const {
+        set_property_metadata(property, key, Value::of(value));
+    }
+    void clear_property_metadata(const std::string& property, const std::string& key) const {
+        detail::check(tusd_property_clear_metadata(stage_, handle_, property.c_str(), key.c_str()));
+    }
+    void set_preview_input(const std::string& input, const Value& value) const {
+        detail::check(tusd_material_set_preview_input(stage_, handle_, input.c_str(), value.raw()));
+    }
+    template <class T>
+    void set_preview_input(const std::string& input, const T& value) const {
+        set_preview_input(input, Value::of(value));
+    }
+    inline Prim set_preview_texture(const std::string& input, const std::string& asset_path) const;
+    inline void set_instances(const Instances& instances, std::optional<double> time = std::nullopt) const;
+    void set_skel_animation(const std::vector<std::string>& joints, const std::vector<Matrix4d>& local_transforms,
+                            std::optional<double> time = std::nullopt) const {
+        if (local_transforms.size() != joints.size())
+            throw Error(Status::InvalidArgument, "each joint needs one local transform");
+        auto raw = c_strings(joints);
+        const double t = time.value_or(0.0);
+        detail::check(tusd_prim_set_skel_animation(stage_, handle_, raw.data(), raw.size(),
+                                                   local_transforms.empty() ? nullptr : local_transforms[0].data(),
+                                                   time ? &t : nullptr));
+    }
+    inline void bind_skeleton(const Prim& skeleton, const std::optional<Prim>& animation = std::nullopt) const;
+    void set_skinning(Span<std::int32_t> joint_indices, Span<float> joint_weights, std::uint32_t influences_per_point,
+                      const std::optional<Matrix4d>& geom_bind_transform = std::nullopt,
+                      const std::vector<std::string>& joints = {}) const {
+        if (joint_indices.size() != joint_weights.size())
+            throw Error(Status::InvalidArgument, "each joint index needs one weight");
+        auto raw = c_strings(joints);
+        detail::check(tusd_prim_set_skinning(stage_, handle_, joint_indices.data(), joint_weights.data(),
+                                             joint_indices.size(), influences_per_point,
+                                             geom_bind_transform ? geom_bind_transform->data() : nullptr,
+                                             raw.data(), raw.size()));
+    }
+    void set_blend_shape_inbetween(const std::string& name, float weight, Span<std::array<float, 3>> offsets,
+                                   Span<std::array<float, 3>> normal_offsets = {}) const {
+        if (!normal_offsets.empty() && normal_offsets.size() != offsets.size())
+            throw Error(Status::InvalidArgument, "give one normal offset for each offset, or none");
+        detail::check(tusd_prim_set_blend_shape_inbetween(
+            stage_, handle_, name.c_str(), weight, offsets.empty() ? nullptr : offsets.data()->data(), offsets.size(),
+            normal_offsets.empty() ? nullptr : normal_offsets.data()->data()));
+    }
+    inline void set_blend_shapes(const std::vector<std::string>& names, const std::vector<Prim>& targets) const;
+    void set_blend_shape_weights(const std::vector<std::string>& names, const std::vector<float>& weights,
+                                 std::optional<double> time = std::nullopt) const {
+        if (names.size() != weights.size()) throw Error(Status::InvalidArgument, "each blend shape needs one weight");
+        auto raw = c_strings(names);
+        const double t = time.value_or(0.0);
+        detail::check(tusd_prim_set_blend_shape_weights(stage_, handle_, raw.data(), weights.data(), names.size(),
+                                                        time ? &t : nullptr));
+    }
+    void set_value_clips(const std::string& clip_set, const std::vector<std::string>& asset_paths,
+                         const std::string& prim_path, const std::vector<std::array<double, 2>>& active,
+                         const std::vector<std::array<double, 2>>& times = {},
+                         const std::string& manifest_asset_path = "") const {
+        auto raw = c_strings(asset_paths);
+        detail::check(tusd_prim_set_value_clips(stage_, handle_, clip_set.c_str(), raw.data(), raw.size(),
+                                                prim_path.c_str(), active.empty() ? nullptr : active[0].data(),
+                                                active.size(), times.empty() ? nullptr : times[0].data(),
+                                                times.size(), manifest_asset_path.c_str()));
+    }
+    void export_clip_manifest(const std::string& clip_set, const std::string& path) const {
+        detail::check(tusd_prim_export_clip_manifest(stage_, handle_, clip_set.c_str(), path.c_str()));
     }
     void add_inherit(const std::string& path) const {
         detail::check(tusd_prim_add_inherit(stage_, handle_, path.c_str()));
@@ -904,6 +1017,30 @@ inline std::optional<PrimvarInfo> Prim::primvar(const std::string& name, Value& 
     if (!found) return std::nullopt;
     return PrimvarInfo{info.name,         info.type_name, static_cast<Interpolation>(info.interpolation),
                        info.element_size, info.indexed,   Prim(stage_, info.source)};
+}
+
+inline void Prim::set_blend_shapes(const std::vector<std::string>& names, const std::vector<Prim>& targets) const {
+    if (names.size() != targets.size()) throw Error(Status::InvalidArgument, "each blend shape needs one target");
+    std::vector<TusdPrim> raw_targets;
+    for (const auto& t : targets) {
+        if (t.stage_ != stage_) throw Error(Status::InvalidArgument, "prim belongs to a different stage");
+        raw_targets.push_back(t.handle_);
+    }
+    auto raw = c_strings(names);
+    detail::check(tusd_prim_set_blend_shapes(stage_, handle_, raw.data(), raw_targets.data(), names.size()));
+}
+
+inline void Prim::bind_skeleton(const Prim& skeleton, const std::optional<Prim>& animation) const {
+    if (skeleton.stage_ != stage_ || (animation && animation->stage_ != stage_))
+        throw Error(Status::InvalidArgument, "prim belongs to a different stage");
+    detail::check(tusd_prim_bind_skeleton(stage_, handle_, skeleton.handle_,
+                                          animation ? animation->handle_ : TUSD_NO_PRIM));
+}
+
+inline Prim Prim::set_preview_texture(const std::string& input, const std::string& asset_path) const {
+    TusdPrim p = 0;
+    detail::check(tusd_material_set_preview_texture(stage_, handle_, input.c_str(), asset_path.c_str(), &p));
+    return Prim(stage_, p);
 }
 
 inline std::optional<Prim> Prim::bound_material(const std::string& purpose) const {
@@ -1208,6 +1345,26 @@ inline std::vector<std::array<float, 3>> vec3s(const float* data, std::size_t co
     for (std::size_t i = 0; i < count; ++i) out[i] = {data[i * 3], data[i * 3 + 1], data[i * 3 + 2]};
     return out;
 }
+}
+
+inline void Prim::set_instances(const Instances& instances, std::optional<double> time) const {
+    std::vector<TusdPrim> prototypes;
+    for (const auto& p : instances.prototypes) {
+        if (p.stage_ != stage_) throw Error(Status::InvalidArgument, "prim belongs to a different stage");
+        prototypes.push_back(p.handle_);
+    }
+    const std::size_t n = instances.transforms.size();
+    if (instances.proto_indices.size() != n || !(instances.ids.empty() || instances.ids.size() == n))
+        throw Error(Status::InvalidArgument, "each transform needs one proto index, and one id if ids are given");
+    TusdInstancesView v{};
+    v.prototypes = prototypes.data();
+    v.prototype_count = prototypes.size();
+    v.proto_indices = instances.proto_indices.data();
+    v.ids = instances.ids.empty() ? nullptr : instances.ids.data();
+    v.transforms = n ? instances.transforms[0].data() : nullptr;
+    v.count = n;
+    const double t = time.value_or(0.0);
+    detail::check(tusd_prim_set_instances(stage_, handle_, &v, time ? &t : nullptr));
 }
 
 inline std::optional<Instances> Prim::instancer_instances(std::optional<double> time, bool include_prototype_transform,
@@ -1599,6 +1756,37 @@ public:
     Prim override_prim(const std::string& path) const {
         TusdPrim p = 0;
         detail::check(tusd_stage_override_prim(stage_.get(), path.c_str(), &p));
+        return Prim(stage_.get(), p);
+    }
+    Prim define_skeleton(const std::string& path, const std::vector<std::string>& joints,
+                         const std::vector<Matrix4d>& bind_transforms,
+                         const std::vector<Matrix4d>& rest_transforms = {}) const {
+        if (bind_transforms.size() != joints.size() || !(rest_transforms.empty() || rest_transforms.size() == joints.size()))
+            throw Error(Status::InvalidArgument, "each joint needs one bind transform, and one rest transform if any");
+        std::vector<const char*> raw;
+        for (const auto& j : joints) raw.push_back(j.c_str());
+        TusdPrim p = 0;
+        detail::check(tusd_stage_define_skeleton(stage_.get(), path.c_str(), raw.data(), raw.size(),
+                                                 bind_transforms.empty() ? nullptr : bind_transforms[0].data(),
+                                                 rest_transforms.empty() ? nullptr : rest_transforms[0].data(), &p));
+        return Prim(stage_.get(), p);
+    }
+    Prim define_blend_shape(const std::string& path, Span<std::array<float, 3>> offsets,
+                            Span<std::array<float, 3>> normal_offsets = {},
+                            Span<std::int32_t> point_indices = {}) const {
+        if ((!normal_offsets.empty() && normal_offsets.size() != offsets.size()) ||
+            (!point_indices.empty() && point_indices.size() != offsets.size()))
+            throw Error(Status::InvalidArgument, "give one normal offset and point index for each offset, or none");
+        TusdPrim p = 0;
+        detail::check(tusd_stage_define_blend_shape(
+            stage_.get(), path.c_str(), offsets.empty() ? nullptr : offsets.data()->data(), offsets.size(),
+            normal_offsets.empty() ? nullptr : normal_offsets.data()->data(),
+            point_indices.empty() ? nullptr : point_indices.data(), &p));
+        return Prim(stage_.get(), p);
+    }
+    Prim define_preview_material(const std::string& path) const {
+        TusdPrim p = 0;
+        detail::check(tusd_stage_define_preview_material(stage_.get(), path.c_str(), &p));
         return Prim(stage_.get(), p);
     }
     bool remove_prim(const Prim& prim) const {

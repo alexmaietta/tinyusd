@@ -524,6 +524,30 @@ fn numpy_dtype(base: BaseType) -> &'static str {
     }
 }
 
+/// A metadata value in the type its key takes, or, for a dictionary entry
+/// such as `customData:name`, in the type the Python value has.
+fn metadata_from_py(py: Python<'_>, key: &str, property: bool, value: &Bound<'_, PyAny>) -> PyResult<core::Value> {
+    if let Some(type_name) = core::Stage::metadata_type(key, property) {
+        return from_py(py, value, type_name);
+    }
+    let type_name = if value.is_instance_of::<pyo3::types::PyBool>() {
+        "bool"
+    } else if value.is_instance_of::<pyo3::types::PyInt>() {
+        "int"
+    } else if value.is_instance_of::<pyo3::types::PyFloat>() {
+        "double"
+    } else if value.is_instance_of::<pyo3::types::PyString>() {
+        "string"
+    } else if value.cast::<AssetPath>().is_ok() {
+        "asset"
+    } else {
+        return Err(InvalidValueError::new_err(format!(
+            "{key} takes a bool, int, float, str or AssetPath"
+        )));
+    };
+    from_py(py, value, type_name)
+}
+
 fn from_py(py: Python<'_>, value: &Bound<'_, PyAny>, type_name: &str) -> PyResult<core::Value> {
     let (base, array) = BaseType::from_type_name(type_name)
         .ok_or_else(|| InvalidValueError::new_err(format!("values of type '{type_name}' can't be written")))?;
@@ -808,6 +832,79 @@ impl Stage {
 
     fn override_prim(slf: &Bound<'_, Self>, path: &str) -> PyResult<Prim> {
         let handle = slf.borrow_mut().inner.override_prim(path).map_err(py_err)?;
+        Ok(Prim {
+            stage: slf.clone().unbind(),
+            handle,
+        })
+    }
+
+    #[pyo3(signature = (path, joints, bind_transforms, rest_transforms = None))]
+    fn define_skeleton(
+        slf: &Bound<'_, Self>,
+        path: &str,
+        joints: Vec<String>,
+        bind_transforms: &Bound<'_, PyAny>,
+        rest_transforms: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Prim> {
+        let py = slf.py();
+        let joints: Vec<&str> = joints.iter().map(String::as_str).collect();
+        let bind = from_py(py, bind_transforms, "matrix4d[]")?;
+        let rest = match rest_transforms {
+            Some(r) => from_py(py, r, "matrix4d[]")?,
+            None => core::Value::new(),
+        };
+        let handle = slf
+            .borrow_mut()
+            .inner
+            .define_skeleton(
+                path,
+                &joints,
+                bind.as_slice().unwrap_or(&[]),
+                rest.as_slice().unwrap_or(&[]),
+            )
+            .map_err(py_err)?;
+        Ok(Prim {
+            stage: slf.clone().unbind(),
+            handle,
+        })
+    }
+
+    #[pyo3(signature = (path, offsets, normal_offsets = None, point_indices = None))]
+    fn define_blend_shape(
+        slf: &Bound<'_, Self>,
+        path: &str,
+        offsets: &Bound<'_, PyAny>,
+        normal_offsets: Option<&Bound<'_, PyAny>>,
+        point_indices: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Prim> {
+        let py = slf.py();
+        let offsets = from_py(py, offsets, "vector3f[]")?;
+        let normals = match normal_offsets {
+            Some(n) => from_py(py, n, "vector3f[]")?,
+            None => core::Value::new(),
+        };
+        let indices = match point_indices {
+            Some(i) => from_py(py, i, "int[]")?,
+            None => core::Value::new(),
+        };
+        let handle = slf
+            .borrow_mut()
+            .inner
+            .define_blend_shape(
+                path,
+                offsets.as_slice().unwrap_or(&[]),
+                normals.as_slice().unwrap_or(&[]),
+                indices.as_slice().unwrap_or(&[]),
+            )
+            .map_err(py_err)?;
+        Ok(Prim {
+            stage: slf.clone().unbind(),
+            handle,
+        })
+    }
+
+    fn define_preview_material(slf: &Bound<'_, Self>, path: &str) -> PyResult<Prim> {
+        let handle = slf.borrow_mut().inner.define_preview_material(path).map_err(py_err)?;
         Ok(Prim {
             stage: slf.clone().unbind(),
             handle,
@@ -1652,14 +1749,257 @@ impl Prim {
         self.with(py, |s, p| s.set_instanceable(p, instanceable))
     }
 
-    #[pyo3(signature = (asset_path = "", prim_path = ""))]
-    fn add_reference(&self, py: Python<'_>, asset_path: &str, prim_path: &str) -> PyResult<()> {
-        self.with(py, |s, p| s.add_reference(p, asset_path, prim_path))
+    #[pyo3(signature = (asset_path = "", prim_path = "", *, offset = 0.0, scale = 1.0))]
+    fn add_reference(
+        &self,
+        py: Python<'_>,
+        asset_path: &str,
+        prim_path: &str,
+        offset: f64,
+        scale: f64,
+    ) -> PyResult<()> {
+        self.with(py, |s, p| {
+            s.add_reference_with_offset(p, asset_path, prim_path, offset, scale)
+        })
+    }
+
+    #[pyo3(signature = (asset_path, prim_path = "", *, offset = 0.0, scale = 1.0))]
+    fn add_payload(&self, py: Python<'_>, asset_path: &str, prim_path: &str, offset: f64, scale: f64) -> PyResult<()> {
+        self.with(py, |s, p| {
+            s.add_payload_with_offset(p, asset_path, prim_path, offset, scale)
+        })
     }
 
     #[pyo3(signature = (asset_path, prim_path = ""))]
-    fn add_payload(&self, py: Python<'_>, asset_path: &str, prim_path: &str) -> PyResult<()> {
-        self.with(py, |s, p| s.add_payload(p, asset_path, prim_path))
+    fn remove_reference(&self, py: Python<'_>, asset_path: &str, prim_path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.remove_reference(p, asset_path, prim_path))
+    }
+
+    #[pyo3(signature = (asset_path, prim_path = ""))]
+    fn remove_payload(&self, py: Python<'_>, asset_path: &str, prim_path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.remove_payload(p, asset_path, prim_path))
+    }
+
+    fn remove_inherit(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.remove_inherit(p, path))
+    }
+
+    fn remove_specialize(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.remove_specialize(p, path))
+    }
+
+    fn remove_variant(&self, py: Python<'_>, variant_set: &str, variant: &str) -> PyResult<bool> {
+        self.with(py, |s, p| s.remove_variant(p, variant_set, variant))
+    }
+
+    fn remove_property(&self, py: Python<'_>, name: &str) -> PyResult<bool> {
+        self.with(py, |s, p| s.remove_property(p, name))
+    }
+
+    fn remove_target(&self, py: Python<'_>, name: &str, target: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.remove_target(p, name, target).map(drop))
+    }
+
+    fn remove_connection(&self, py: Python<'_>, name: &str, source: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.remove_connection(p, name, source).map(drop))
+    }
+
+    fn set_metadata(&self, py: Python<'_>, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = metadata_from_py(py, key, false, value)?;
+        self.with(py, |s, p| s.set_metadata(p, key, &value))
+    }
+
+    fn clear_metadata(&self, py: Python<'_>, key: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.clear_metadata(p, key))
+    }
+
+    fn set_property_metadata(&self, py: Python<'_>, name: &str, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = metadata_from_py(py, key, true, value)?;
+        self.with(py, |s, p| s.set_property_metadata(p, name, key, &value))
+    }
+
+    fn clear_property_metadata(&self, py: Python<'_>, name: &str, key: &str) -> PyResult<()> {
+        self.with(py, |s, p| s.clear_property_metadata(p, name, key))
+    }
+
+    fn set_preview_input(&self, py: Python<'_>, input: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = match core::Stage::preview_input_type(input) {
+            Some(type_name) => from_py(py, value, type_name)?,
+            None => core::Value::new(),
+        };
+        self.with(py, |s, p| s.set_preview_input(p, input, &value))
+    }
+
+    #[pyo3(signature = (prototypes, proto_indices, transforms, ids = None, time = None))]
+    fn set_instances(
+        &self,
+        py: Python<'_>,
+        prototypes: Vec<PyRef<'_, Prim>>,
+        proto_indices: &Bound<'_, PyAny>,
+        transforms: &Bound<'_, PyAny>,
+        ids: Option<&Bound<'_, PyAny>>,
+        time: Option<f64>,
+    ) -> PyResult<()> {
+        let stage = self.stage.bind(py);
+        let prototypes = prototypes.iter().map(|p| own(stage, p)).collect::<PyResult<Vec<_>>>()?;
+        let indices = from_py(py, proto_indices, "int[]")?;
+        let transforms = from_py(py, transforms, "matrix4d[]")?;
+        let ids = match ids {
+            Some(ids) => from_py(py, ids, "int64[]")?.as_slice::<i64>().unwrap_or(&[]).to_vec(),
+            None => Vec::new(),
+        };
+        let instances = core::Instances {
+            prototypes,
+            proto_indices: indices.as_slice::<i32>().unwrap_or(&[]).to_vec(),
+            ids,
+            transforms: transforms.as_slice::<[f64; 16]>().unwrap_or(&[]).to_vec(),
+        };
+        self.with(py, |s, p| s.set_instances(p, &instances, time))
+    }
+
+    #[pyo3(signature = (joints, local_transforms, time = None))]
+    fn set_skel_animation(
+        &self,
+        py: Python<'_>,
+        joints: Vec<String>,
+        local_transforms: &Bound<'_, PyAny>,
+        time: Option<f64>,
+    ) -> PyResult<()> {
+        let joints: Vec<&str> = joints.iter().map(String::as_str).collect();
+        let local = from_py(py, local_transforms, "matrix4d[]")?;
+        self.with(py, |s, p| {
+            s.set_skel_animation(p, &joints, local.as_slice().unwrap_or(&[]), time)
+        })
+    }
+
+    #[pyo3(signature = (skeleton, animation = None))]
+    fn bind_skeleton(
+        &self,
+        py: Python<'_>,
+        skeleton: PyRef<'_, Prim>,
+        animation: Option<PyRef<'_, Prim>>,
+    ) -> PyResult<()> {
+        let stage = self.stage.bind(py);
+        let skeleton = own(stage, &skeleton)?;
+        let animation = animation.map(|a| own(stage, &a)).transpose()?;
+        self.with(py, |s, p| s.bind_skeleton(p, skeleton, animation))
+    }
+
+    #[pyo3(signature = (joint_indices, joint_weights, influences_per_point, geom_bind_transform = None, joints = None))]
+    fn set_skinning(
+        &self,
+        py: Python<'_>,
+        joint_indices: &Bound<'_, PyAny>,
+        joint_weights: &Bound<'_, PyAny>,
+        influences_per_point: u32,
+        geom_bind_transform: Option<&Bound<'_, PyAny>>,
+        joints: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let indices = from_py(py, joint_indices, "int[]")?;
+        let weights = from_py(py, joint_weights, "float[]")?;
+        let bind = geom_bind_transform
+            .map(|m| doubles::<16>(py, m, "geom_bind_transform"))
+            .transpose()?;
+        let joints = joints.unwrap_or_default();
+        let joints: Vec<&str> = joints.iter().map(String::as_str).collect();
+        self.with(py, |s, p| {
+            s.set_skinning(
+                p,
+                indices.as_slice().unwrap_or(&[]),
+                weights.as_slice().unwrap_or(&[]),
+                influences_per_point,
+                bind.as_ref(),
+                &joints,
+            )
+        })
+    }
+
+    #[pyo3(signature = (name, weight, offsets, normal_offsets = None))]
+    fn set_blend_shape_inbetween(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        weight: f32,
+        offsets: &Bound<'_, PyAny>,
+        normal_offsets: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let offsets = from_py(py, offsets, "vector3f[]")?;
+        let normals = match normal_offsets {
+            Some(n) => from_py(py, n, "vector3f[]")?,
+            None => core::Value::new(),
+        };
+        self.with(py, |s, p| {
+            s.set_blend_shape_inbetween(
+                p,
+                name,
+                weight,
+                offsets.as_slice().unwrap_or(&[]),
+                normals.as_slice().unwrap_or(&[]),
+            )
+        })
+    }
+
+    fn set_blend_shapes(&self, py: Python<'_>, names: Vec<String>, targets: Vec<PyRef<'_, Prim>>) -> PyResult<()> {
+        let stage = self.stage.bind(py);
+        let targets = targets.iter().map(|t| own(stage, t)).collect::<PyResult<Vec<_>>>()?;
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.with(py, |s, p| s.set_blend_shapes(p, &names, &targets))
+    }
+
+    #[pyo3(signature = (names, weights, time = None))]
+    fn set_blend_shape_weights(
+        &self,
+        py: Python<'_>,
+        names: Vec<String>,
+        weights: &Bound<'_, PyAny>,
+        time: Option<f64>,
+    ) -> PyResult<()> {
+        let weights = from_py(py, weights, "float[]")?;
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.with(py, |s, p| {
+            s.set_blend_shape_weights(p, &names, weights.as_slice().unwrap_or(&[]), time)
+        })
+    }
+
+    #[pyo3(signature = (clip_set, asset_paths, prim_path, active, times = None, manifest_asset_path = ""))]
+    #[allow(clippy::too_many_arguments)]
+    fn set_value_clips(
+        &self,
+        py: Python<'_>,
+        clip_set: &str,
+        asset_paths: Vec<String>,
+        prim_path: &str,
+        active: &Bound<'_, PyAny>,
+        times: Option<&Bound<'_, PyAny>>,
+        manifest_asset_path: &str,
+    ) -> PyResult<()> {
+        let assets: Vec<&str> = asset_paths.iter().map(String::as_str).collect();
+        let active = from_py(py, active, "double2[]")?;
+        let times = match times {
+            Some(t) => from_py(py, t, "double2[]")?,
+            None => core::Value::new(),
+        };
+        self.with(py, |s, p| {
+            s.set_value_clips(
+                p,
+                clip_set,
+                &assets,
+                prim_path,
+                active.as_slice().unwrap_or(&[]),
+                times.as_slice().unwrap_or(&[]),
+                manifest_asset_path,
+            )
+        })
+    }
+
+    fn export_clip_manifest(&self, py: Python<'_>, clip_set: &str, path: PathBuf) -> PyResult<()> {
+        let path = path.to_string_lossy().into_owned();
+        self.with(py, |s, p| s.export_clip_manifest(p, clip_set, &path))
+    }
+
+    fn set_preview_texture(&self, py: Python<'_>, input: &str, asset_path: &str) -> PyResult<Prim> {
+        let texture = self.with(py, |s, p| s.set_preview_texture(p, input, asset_path))?;
+        Ok(self.sibling(py, texture))
     }
 
     fn add_inherit(&self, py: Python<'_>, path: &str) -> PyResult<()> {

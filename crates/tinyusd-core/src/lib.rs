@@ -1,5 +1,5 @@
 #[cfg(feature = "write")]
-mod author;
+pub(crate) mod author;
 mod helpers;
 mod host;
 mod schemas;

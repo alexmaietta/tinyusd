@@ -1129,6 +1129,169 @@ enum TusdStatus tusd_stage_export_package(struct TusdStage *stage, const char *p
 
 enum TusdStatus tusd_prim_remove_api(struct TusdStage *stage, TusdPrim p, const char *schema);
 
+enum TusdStatus tusd_prim_set_metadata(struct TusdStage *stage,
+                                       TusdPrim p,
+                                       const char *key,
+                                       const struct TusdValue *value);
+
+enum TusdStatus tusd_prim_clear_metadata(struct TusdStage *stage, TusdPrim p, const char *key);
+
+enum TusdStatus tusd_property_set_metadata(struct TusdStage *stage,
+                                           TusdPrim p,
+                                           const char *name,
+                                           const char *key,
+                                           const struct TusdValue *value);
+
+enum TusdStatus tusd_property_clear_metadata(struct TusdStage *stage,
+                                             TusdPrim p,
+                                             const char *name,
+                                             const char *key);
+
+enum TusdStatus tusd_prim_remove_property(struct TusdStage *stage,
+                                          TusdPrim p,
+                                          const char *name,
+                                          bool *out_removed);
+
+enum TusdStatus tusd_relationship_remove_target(struct TusdStage *stage,
+                                                TusdPrim p,
+                                                const char *name,
+                                                const char *target);
+
+enum TusdStatus tusd_attribute_remove_connection(struct TusdStage *stage,
+                                                 TusdPrim p,
+                                                 const char *name,
+                                                 const char *source);
+
+enum TusdStatus tusd_prim_add_reference_with_offset(struct TusdStage *stage,
+                                                    TusdPrim p,
+                                                    const char *asset_path,
+                                                    const char *prim_path,
+                                                    double offset,
+                                                    double scale);
+
+enum TusdStatus tusd_prim_add_payload_with_offset(struct TusdStage *stage,
+                                                  TusdPrim p,
+                                                  const char *asset_path,
+                                                  const char *prim_path,
+                                                  double offset,
+                                                  double scale);
+
+enum TusdStatus tusd_prim_remove_reference(struct TusdStage *stage,
+                                           TusdPrim p,
+                                           const char *asset_path,
+                                           const char *prim_path);
+
+enum TusdStatus tusd_prim_remove_payload(struct TusdStage *stage,
+                                         TusdPrim p,
+                                         const char *asset_path,
+                                         const char *prim_path);
+
+enum TusdStatus tusd_prim_remove_inherit(struct TusdStage *stage, TusdPrim p, const char *path);
+
+enum TusdStatus tusd_prim_remove_specialize(struct TusdStage *stage, TusdPrim p, const char *path);
+
+enum TusdStatus tusd_prim_remove_variant(struct TusdStage *stage,
+                                         TusdPrim p,
+                                         const char *variant_set,
+                                         const char *variant,
+                                         bool *out_removed);
+
+enum TusdStatus tusd_stage_define_preview_material(struct TusdStage *stage,
+                                                   const char *path,
+                                                   TusdPrim *out_material);
+
+enum TusdStatus tusd_material_set_preview_input(struct TusdStage *stage,
+                                                TusdPrim material,
+                                                const char *input,
+                                                const struct TusdValue *value);
+
+enum TusdStatus tusd_material_set_preview_texture(struct TusdStage *stage,
+                                                  TusdPrim material,
+                                                  const char *input,
+                                                  const char *asset_path,
+                                                  TusdPrim *out_texture);
+
+enum TusdStatus tusd_prim_set_instances(struct TusdStage *stage,
+                                        TusdPrim p,
+                                        const struct TusdInstancesView *instances,
+                                        const double *time);
+
+enum TusdStatus tusd_stage_define_skeleton(struct TusdStage *stage,
+                                           const char *path,
+                                           const char *const *joints,
+                                           size_t joint_count,
+                                           const double *bind_transforms,
+                                           const double *rest_transforms,
+                                           TusdPrim *out_skeleton);
+
+enum TusdStatus tusd_prim_set_skel_animation(struct TusdStage *stage,
+                                             TusdPrim p,
+                                             const char *const *joints,
+                                             size_t joint_count,
+                                             const double *local_transforms,
+                                             const double *time);
+
+enum TusdStatus tusd_prim_bind_skeleton(struct TusdStage *stage,
+                                        TusdPrim p,
+                                        TusdPrim skeleton,
+                                        TusdPrim animation);
+
+enum TusdStatus tusd_prim_set_skinning(struct TusdStage *stage,
+                                       TusdPrim p,
+                                       const int32_t *joint_indices,
+                                       const float *joint_weights,
+                                       size_t count,
+                                       uint32_t influences_per_point,
+                                       const double *geom_bind_transform,
+                                       const char *const *joints,
+                                       size_t joint_count);
+
+enum TusdStatus tusd_stage_define_blend_shape(struct TusdStage *stage,
+                                              const char *path,
+                                              const float *offsets,
+                                              size_t count,
+                                              const float *normal_offsets,
+                                              const int32_t *point_indices,
+                                              TusdPrim *out_blend_shape);
+
+enum TusdStatus tusd_prim_set_blend_shape_inbetween(struct TusdStage *stage,
+                                                    TusdPrim p,
+                                                    const char *name,
+                                                    float weight,
+                                                    const float *offsets,
+                                                    size_t count,
+                                                    const float *normal_offsets);
+
+enum TusdStatus tusd_prim_set_blend_shapes(struct TusdStage *stage,
+                                           TusdPrim p,
+                                           const char *const *names,
+                                           const TusdPrim *targets,
+                                           size_t count);
+
+enum TusdStatus tusd_prim_set_blend_shape_weights(struct TusdStage *stage,
+                                                  TusdPrim p,
+                                                  const char *const *names,
+                                                  const float *weights,
+                                                  size_t count,
+                                                  const double *time);
+
+enum TusdStatus tusd_prim_set_value_clips(struct TusdStage *stage,
+                                          TusdPrim p,
+                                          const char *clip_set,
+                                          const char *const *asset_paths,
+                                          size_t asset_count,
+                                          const char *prim_path,
+                                          const double *active,
+                                          size_t active_count,
+                                          const double *times,
+                                          size_t time_count,
+                                          const char *manifest_asset_path);
+
+enum TusdStatus tusd_prim_export_clip_manifest(struct TusdStage *stage,
+                                               TusdPrim p,
+                                               const char *clip_set,
+                                               const char *path);
+
 enum TusdStatus tusd_relationship_add_target(struct TusdStage *stage,
                                              TusdPrim p,
                                              const char *name,

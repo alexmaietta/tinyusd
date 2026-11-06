@@ -292,3 +292,130 @@ def test_remove_rename_and_variants():
     assert asset.variant_sets == {"lod": ["high", "low"]}
     asset.set_variant_selection("lod", "high")
     assert stage.prim("/Asset/Geo").type_name == "Sphere"
+
+
+def test_metadata_and_removals(tmp_path):
+    stage = tinyusd.Stage.create_in_memory()
+    world = stage.define_prim("/World", "Xform")
+    world.set_metadata("hidden", True)
+    world.set_metadata("displayName", "World")
+    world.set_metadata("customData:tool:version", 3)
+    world.set_metadata("customData:scale", 0.5)
+    assert world.metadata("customData:tool:version") == 3
+    assert world.metadata("customData:scale") == 0.5
+    assert world.metadata("displayName") == "World"
+    with pytest.raises(tinyusd.InvalidValueError):
+        world.set_metadata("hidden", "yes")
+    with pytest.raises(tinyusd.InvalidValueError):
+        world.set_metadata("customData:bad", [1, 2])
+    world.clear_metadata("customData:tool")
+    assert world.metadata_keys("customData") == ["scale"]
+
+    world.create_attribute("tint", "color3f")
+    world.set_property_metadata("tint", "colorSpace", "raw")
+    assert world.attribute_metadata("tint", "colorSpace") == "raw"
+    world.clear_property_metadata("tint", "colorSpace")
+    assert world.attribute_metadata("tint", "colorSpace") is None
+    assert world.remove_property("tint")
+    assert not world.remove_property("tint")
+
+    world.set_targets("r", ["/A", "/B"])
+    world.remove_target("r", "/A")
+    assert world.targets("r") == ["/B"]
+
+    for name in ("red", "blue"):
+        world.edit_variant("look", name)
+    stage.set_edit_target(stage.edit_target)
+    assert world.remove_variant("look", "red")
+    assert world.variant_sets == {"look": ["blue"]}
+
+
+def test_reference_offsets(tmp_path):
+    anim = tinyusd.Stage.create_new(str(tmp_path / "anim.usda"))
+    root = anim.define_prim("/Anim", "Xform")
+    anim.set_default_prim(root)
+    root.create_attribute("v", "double")
+    root.set("v", 0.0, time=0)
+    root.set("v", 100.0, time=10)
+    anim.save()
+
+    stage = tinyusd.Stage.create_in_memory()
+    late = stage.define_prim("/Late", "Xform")
+    late.add_reference(str(tmp_path / "anim.usda"), offset=5.0, scale=2.0)
+    assert late.get("v", time=25.0) == 100.0
+    with pytest.raises(tinyusd.InvalidValueError):
+        late.add_reference(str(tmp_path / "anim.usda"), scale=0.0)
+    late.remove_reference(str(tmp_path / "anim.usda"))
+    assert late.get("v") is None
+
+
+def test_preview_material():
+    stage = tinyusd.Stage.create_in_memory()
+    mesh = build(stage)
+    look = stage.define_preview_material("/World/Looks/Red")
+    look.set_preview_input("diffuseColor", [1.0, 0.0, 0.0])
+    look.set_preview_input("roughness", 0.3)
+    texture = look.set_preview_texture("normal", "./normal.png")
+    assert texture.path == "/World/Looks/Red/NormalTexture"
+    with pytest.raises(tinyusd.InvalidValueError):
+        look.set_preview_input("shininess", 1.0)
+    mesh.bind_material(look)
+    assert mesh.bound_material().path == "/World/Looks/Red"
+    shader = stage.prim("/World/Looks/Red/PreviewSurface")
+    assert shader.connections("inputs:normal") == ["/World/Looks/Red/NormalTexture.outputs:rgb"]
+    np.testing.assert_allclose(shader.get("inputs:diffuseColor"), [1.0, 0.0, 0.0])
+
+
+def translate(x, y, z):
+    m = np.eye(4)
+    m[3, :3] = (x, y, z)
+    return m
+
+
+def test_instancer_and_skeleton_writers():
+    stage = tinyusd.Stage.create_in_memory()
+    tree = stage.define_prim("/Protos/Tree", "Cone")
+    field = stage.define_prim("/Field")
+    field.set_instances([tree], [0, 0], np.stack([translate(1, 0, 0), translate(0, 2, 0)]), ids=[5, 6])
+    back = field.instancer_instances(include_prototype_transform=False)
+    assert list(back.ids) == [5, 6]
+    np.testing.assert_allclose(back.transforms[1][3, :3], [0, 2, 0], atol=1e-6)
+    with pytest.raises(tinyusd.InvalidValueError):
+        field.set_instances([tree], [3, 0], np.stack([translate(0, 0, 0)] * 2))
+
+    root = stage.define_prim("/Rig", "SkelRoot")
+    joints = ["hips", "hips/spine"]
+    skel = stage.define_skeleton("/Rig/Skel", joints, [np.eye(4), translate(0, 1, 0)])
+    walk = stage.define_prim("/Rig/Skel/Walk")
+    walk.set_skel_animation(joints, [np.eye(4), translate(0, 2, 0)], time=1)
+    body = stage.define_prim("/Rig/Body", "Mesh")
+    body.set_mesh(np.zeros((3, 3), dtype=np.float32), [3], [0, 1, 2])
+    body.set_skinning([0, 1, 1], [1.0, 1.0, 1.0], 1, geom_bind_transform=np.eye(4))
+    root.bind_skeleton(skel, walk)
+    assert body.skin_binding(time=1).influences_per_point == 1
+    np.testing.assert_allclose(body.skinned_points(time=1)[1], [0, 1, 0], atol=1e-5)
+
+    lift = stage.define_blend_shape("/Rig/Body/Lift", [(0, 0, 1)], point_indices=[2])
+    lift.set_blend_shape_inbetween("half", 0.5, [(0, 0, 0.25)])
+    body.set_blend_shapes(["lift"], [lift])
+    walk.set_blend_shape_weights(["lift"], [1.0], time=1)
+    assert body.skin_binding(time=1).blend_shapes == ["lift"]
+    np.testing.assert_allclose(body.skinned_points(time=1)[2], [0, 1, 1], atol=1e-5)
+    with pytest.raises(tinyusd.InvalidValueError):
+        walk.set_blend_shape_weights(["lift"], [1.0, 2.0])
+
+
+def test_value_clips(tmp_path):
+    clip = tinyusd.Stage.create_new(tmp_path / "clip.usda")
+    anim = clip.define_prim("/Anim", "Xform")
+    anim.create_attribute("v", "double")
+    anim.set("v", 1.0, time=0)
+    anim.set("v", 11.0, time=10)
+    clip.save()
+    stage = tinyusd.Stage.create_new(tmp_path / "main.usda")
+    thing = stage.define_prim("/Thing", "Xform")
+    thing.create_attribute("v", "double")
+    thing.set_value_clips("default", ["./clip.usda"], "/Anim", [(0, 0)], times=[(0, 0), (10, 10)],
+                          manifest_asset_path="./manifest.usda")
+    thing.export_clip_manifest("default", tmp_path / "manifest.usda")
+    assert thing.get("v", time=5) == 6.0

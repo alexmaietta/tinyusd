@@ -159,6 +159,8 @@ pub struct Stage {
     pub(crate) caches: crate::helpers::Caches,
     #[cfg(feature = "write")]
     pub(crate) batch: Option<crate::author::Batch>,
+    #[cfg(feature = "write")]
+    pub(crate) stored: HashMap<String, u64>,
 }
 
 impl Stage {
@@ -204,6 +206,8 @@ impl Stage {
             caches: crate::helpers::Caches::default(),
             #[cfg(feature = "write")]
             batch: None,
+            #[cfg(feature = "write")]
+            stored: HashMap::new(),
         }
     }
 

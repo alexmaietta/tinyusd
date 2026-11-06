@@ -102,7 +102,16 @@ impl Ops<'_> {
 }
 
 const PATHS: [&str; 8] = ["/A", "/A/B", "/A/B/C", "/D", "/D/E", "/A/F", "/G", "/D/E/H"];
-const TYPES: [&str; 8] = ["", "Xform", "Mesh", "Cube", "Sphere", "Scope", "PhysicsRevoluteJoint", "Material"];
+const TYPES: [&str; 8] = [
+    "",
+    "Xform",
+    "Mesh",
+    "Cube",
+    "Sphere",
+    "Scope",
+    "PhysicsRevoluteJoint",
+    "Material",
+];
 const ATTRS: [(&str, &str); 8] = [
     ("points", "point3f[]"),
     ("size", "double"),
@@ -159,7 +168,7 @@ pub fn edit_sequence(data: &[u8]) {
         }
         let Some(path) = ops.pick(&PATHS) else { break };
         let prim = stage.prim_at_path(path).ok().flatten();
-        let _ = match (op % 20, prim) {
+        let _ = match (op % 28, prim) {
             (0 | 1 | 2, _) => {
                 let Some(t) = ops.pick(&TYPES) else { break };
                 stage.define_prim(path, t).map(drop)
@@ -169,7 +178,11 @@ pub fn edit_sequence(data: &[u8]) {
             (5 | 6, Some(p)) => {
                 let Some(&(name, _)) = ops.pick(&ATTRS) else { break };
                 let Some(v) = value(&mut ops) else { break };
-                let time = if ops.byte().unwrap_or(0) % 2 == 0 { None } else { ops.f64() };
+                let time = if ops.byte().unwrap_or(0) % 2 == 0 {
+                    None
+                } else {
+                    ops.f64()
+                };
                 stage.set(p, name, &v, time)
             }
             (7, Some(p)) => {
@@ -222,10 +235,97 @@ pub fn edit_sequence(data: &[u8]) {
                 stage.set_trs(p, t, [1.0, 0.0, 0.0, 0.0], [1.0; 3], time)
             }
             (18, Some(p)) => {
-                let Some(name) = ops.pick(&["size", "my:f", "points"]) else { break };
-                if op % 2 == 0 { stage.block(p, name) } else { stage.clear(p, name) }
+                let Some(name) = ops.pick(&["size", "my:f", "points"]) else {
+                    break;
+                };
+                if op % 2 == 0 {
+                    stage.block(p, name)
+                } else {
+                    stage.clear(p, name)
+                }
             }
             (19, Some(p)) => stage.set_mesh(p, &[[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], &[3], &[0, 1, 2], None),
+            (20, Some(p)) => {
+                let Some(key) = ops.pick(&["hidden", "displayName", "customData:a", "customData:a:b", "assetInfo"])
+                else {
+                    break;
+                };
+                match (op % 3, value(&mut ops)) {
+                    (0, _) => stage.clear_metadata(p, key),
+                    (1, Some(v)) => stage.set_metadata(p, key, &v),
+                    (_, v) => {
+                        let Some(&(name, _)) = ops.pick(&ATTRS) else { break };
+                        match v {
+                            Some(v) if op % 2 == 0 => stage.set_property_metadata(p, name, key, &v),
+                            _ => stage.clear_property_metadata(p, name, key),
+                        }
+                    }
+                }
+            }
+            (21, Some(p)) => {
+                let Some(&(name, _)) = ops.pick(&ATTRS) else { break };
+                stage.remove_property(p, name).map(drop)
+            }
+            (22, Some(p)) => {
+                let Some(name) = ops.pick(&NAMES) else { break };
+                stage.remove_variant(p, "v", name).map(drop)
+            }
+            (23, Some(p)) => {
+                let Some(target) = ops.pick(&PATHS) else { break };
+                if op % 2 == 0 {
+                    let offset = ops.f64().unwrap_or(0.0);
+                    let scale = ops.f64().unwrap_or(1.0);
+                    stage.add_reference_with_offset(p, "", target, offset, scale)
+                } else {
+                    stage.remove_reference(p, "", target)
+                }
+            }
+            (25, Some(p)) => stage.set_instanceable(p, op % 2 == 0),
+            (26, Some(p)) => {
+                let Some(target) = ops.pick(&PATHS) else { break };
+                let protos: Vec<_> = stage.prim_at_path(target).ok().flatten().into_iter().collect();
+                let n = usize::from(ops.byte().unwrap_or(0) % 4);
+                let x = ops.f64().unwrap_or(0.0);
+                let mut m = [0.0; 16];
+                for i in 0..4 {
+                    m[i * 5] = 1.0;
+                }
+                m[12] = x;
+                let instances = tinyusd_core::Instances {
+                    proto_indices: vec![0; if protos.is_empty() { 0 } else { n }],
+                    transforms: vec![m; if protos.is_empty() { 0 } else { n }],
+                    prototypes: protos,
+                    ids: Vec::new(),
+                };
+                stage.set_instances(p, &instances, ops.f64())
+            }
+            (27, Some(p)) => {
+                let joints = ["a", "a/b"];
+                let mut m = [0.0; 16];
+                for i in 0..4 {
+                    m[i * 5] = ops.f64().unwrap_or(1.0);
+                }
+                if op % 2 == 0 {
+                    stage.set_skel_animation(p, &joints, &[m, m], ops.f64())
+                } else {
+                    let skel = format!("{}/Skel", stage.path(p).unwrap_or("/X"));
+                    match stage.define_skeleton(&skel, &joints, &[m, m], &[]) {
+                        Ok(s) => stage.bind_skeleton(p, s, None),
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+            (24, _) => {
+                let material = stage.define_preview_material(path);
+                match (material, op % 3) {
+                    (Ok(m), 0) => stage.set_preview_texture(m, "normal", "./n.png").map(drop),
+                    (Ok(m), _) => match value(&mut ops) {
+                        Some(v) => stage.set_preview_input(m, "diffuseColor", &v),
+                        None => Ok(()),
+                    },
+                    (Err(e), _) => Err(e),
+                }
+            }
             _ => Ok(()),
         };
         let _ = stage.world_transform(prim.unwrap_or(stage.pseudo_root()), None);

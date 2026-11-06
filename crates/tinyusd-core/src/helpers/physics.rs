@@ -1036,9 +1036,7 @@ pub(crate) mod write {
                     Ok(Value::bool(shape.collision_enabled)),
                 )?;
                 self.rel(prim, "physics:simulationOwner", &shape.simulation_owners)?;
-                if let Some(&material) = shape.materials.first() {
-                    self.bind_material(prim, material, "physics")?;
-                }
+                self.write_collider_materials(shape)?;
                 self.filtered_pairs(prim, &shape.filtered_collisions)?;
                 if shape.kind == ShapeKind::Mesh {
                     self.ensure_api(prim, "PhysicsMeshCollisionAPI")?;
@@ -1073,7 +1071,7 @@ pub(crate) mod write {
                 self.filtered_pairs(prim, &body.filtered_collisions)?;
                 if pose {
                     let m = trs_matrix(body.position, body.rotation, body.scale);
-                    self.set_world_transform(prim, &m, None)?;
+                    self.set_world_pose(prim, &m, None)?;
                 }
                 Ok(())
             }
@@ -1107,12 +1105,135 @@ pub(crate) mod write {
                 }))
             }
 
-            fn joint_side(&mut self, joint: &Joint, side: usize) -> Result<()> {
-                let (body, pos, rot) = if side == 0 {
-                    (joint.body0, joint.local_pos0, joint.local_rot0)
-                } else {
-                    (joint.body1, joint.local_pos1, joint.local_rot1)
+            /// The face subsets of `prim` the reader takes physics materials
+            /// from, in its order.
+            fn material_subsets(&mut self, prim: Prim) -> Result<Vec<Prim>> {
+                use crate::stage::usd_err;
+                use openusd::usd::SchemaBase;
+                use openusd_schemas::geom::{ElementType, Mesh, Subset};
+                use openusd_schemas::physics::MaterialAPI;
+                use openusd_schemas::shade::MaterialBindingAPI;
+                let p = self.usd_prim(prim)?;
+                let Some(mesh) = Mesh::from_prim(p).map_err(usd_err)? else {
+                    return Ok(Vec::new());
                 };
+                let mut paths = Vec::new();
+                for subset in Subset::in_family(&mesh, Some(ElementType::Face), None).map_err(usd_err)? {
+                    let bound = match MaterialBindingAPI::from_prim(subset.prim().clone()).map_err(usd_err)? {
+                        Some(binding) => MaterialAPI::bound(&binding).map_err(usd_err)?,
+                        None => None,
+                    };
+                    if bound.is_some() {
+                        paths.push(subset.prim().path().clone());
+                    }
+                }
+                Ok(paths.iter().map(|p| self.intern(p)).collect())
+            }
+
+            fn physics_material(&mut self, prim: Prim) -> Result<Option<Prim>> {
+                Ok(self.bound_material(prim, "physics")?.map(|b| b.material))
+            }
+
+            /// The inverse of how colliders' materials are read: the face
+            /// subsets bound to a physics material take the first ones, in
+            /// order, and one more is the collider's own.
+            fn write_collider_materials(&mut self, shape: &Shape) -> Result<()> {
+                let prim = shape.prim;
+                let subsets = self.material_subsets(prim)?;
+                let n = subsets.len();
+                if shape.materials.len() > n + 1 {
+                    return Err(Error::InvalidValue(format!(
+                        "{} takes {} physics materials, one for each face subset bound to one and then its own, not {}",
+                        self.path(prim)?,
+                        n + 1,
+                        shape.materials.len()
+                    )));
+                }
+                if let Some(&own) = shape.materials.get(n)
+                    && self.physics_material(prim)? != Some(own)
+                {
+                    self.bind_material(prim, own, "physics")?;
+                }
+                for (&subset, &material) in subsets.iter().zip(&shape.materials) {
+                    if self.physics_material(subset)? != Some(material) {
+                        self.bind_material(subset, material, "physics")?;
+                    }
+                }
+                Ok(())
+            }
+
+            /// The rigid body a joint target belongs to, as the reader finds
+            /// it: its nearest ancestor with `PhysicsRigidBodyAPI`, or else its
+            /// outermost one with `PhysicsCollisionAPI`.
+            fn body_of(&mut self, prim: Prim) -> Result<Option<Prim>> {
+                let mut collision = None;
+                let mut cursor = Some(prim);
+                while let Some(p) = cursor.filter(|&p| p != Prim::PSEUDO_ROOT) {
+                    if self.has_api(p, "PhysicsRigidBodyAPI")? {
+                        return Ok(Some(p));
+                    }
+                    if self.has_api(p, "PhysicsCollisionAPI")? {
+                        collision = Some(p);
+                    }
+                    cursor = self.parent(p)?;
+                }
+                Ok(collision)
+            }
+
+            /// The original target of a joint side, where the joint was read
+            /// through a prim inside its body and still belongs to it.
+            fn anchor_target(&mut self, rel: Option<Prim>, body: Option<Prim>) -> Result<Option<Prim>> {
+                let Some(target) = rel.filter(|&r| Some(r) != body) else {
+                    return Ok(None);
+                };
+                let path = self.path(target)?.to_owned();
+                if self.prim_at_path(&path)?.is_none() {
+                    return Ok(None);
+                }
+                Ok((self.body_of(target)? == body).then_some(target))
+            }
+
+            fn joint_side(&mut self, joint: &Joint, side: usize) -> Result<()> {
+                let (rel, body, pos, rot) = if side == 0 {
+                    (joint.rel0, joint.body0, joint.local_pos0, joint.local_rot0)
+                } else {
+                    (joint.rel1, joint.body1, joint.local_pos1, joint.local_rot1)
+                };
+                if let Some(target) = self.anchor_target(rel, body)? {
+                    // The reader carries the anchor through the target's world
+                    // transform into the body's frame, and scales it there.
+                    use openusd::gf;
+                    let body_world = match body {
+                        Some(b) => gf::Mat4d(self.world_transform(b, None)?),
+                        None => gf::Mat4d::IDENTITY,
+                    };
+                    let scale = body_world.factor(gf::Mat4d::FACTOR_EPSILON).scale;
+                    let unscaled = gf::vec3f(
+                        (f64::from(pos[0]) / scale.x) as f32,
+                        (f64::from(pos[1]) / scale.y) as f32,
+                        (f64::from(pos[2]) / scale.z) as f32,
+                    );
+                    let q = gf::Quatf {
+                        w: rot[0],
+                        x: rot[1],
+                        y: rot[2],
+                        z: rot[3],
+                    };
+                    let local = gf::Mat4d::from_trs(unscaled, q, gf::vec3f(1.0, 1.0, 1.0));
+                    let target_world = gf::Mat4d(self.world_transform(target, None)?);
+                    let anchor = (local * body_world * target_world.inverse_or_max()).remove_scale_shear();
+                    let t = anchor.extract_translation();
+                    let r = anchor.extract_rotation_quat();
+                    let len = (r.w * r.w + r.x * r.x + r.y * r.y + r.z * r.z).sqrt();
+                    self.rel(joint.prim, &format!("physics:body{side}"), &[target])?;
+                    self.put(
+                        joint.prim,
+                        &format!("physics:localPos{side}"),
+                        float3([t.x as f32, t.y as f32, t.z as f32]),
+                    )?;
+                    let r = [r.w / len, r.x / len, r.y / len, r.z / len].map(|v| v as f32);
+                    return self.put(joint.prim, &format!("physics:localRot{side}"), quatf(r));
+                }
                 let mut pos = pos;
                 if let Some(body) = body {
                     let scale = self.body_scale(body)?;

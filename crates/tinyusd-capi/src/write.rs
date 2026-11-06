@@ -771,6 +771,549 @@ pub unsafe extern "C" fn tusd_prim_remove_api(stage: *mut TusdStage, p: TusdPrim
     })
 }
 
+unsafe fn removed_out(out: *mut bool, removed: bool) {
+    if let Some(out) = unsafe { out.as_mut() } {
+        *out = removed;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_metadata(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    key: *const c_char,
+    value: *const TusdValue,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let key = unsafe { str_arg(key, "key") }?;
+        let v = unsafe { value.as_ref() }.ok_or_else(|| invalid("value must not be null"))?;
+        s.stage.set_metadata(prim(p), key, &v.value)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_clear_metadata(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    key: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        s.stage.clear_metadata(prim(p), unsafe { str_arg(key, "key") }?)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_property_set_metadata(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    name: *const c_char,
+    key: *const c_char,
+    value: *const TusdValue,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let name = unsafe { str_arg(name, "name") }?;
+        let key = unsafe { str_arg(key, "key") }?;
+        let v = unsafe { value.as_ref() }.ok_or_else(|| invalid("value must not be null"))?;
+        s.stage.set_property_metadata(prim(p), name, key, &v.value)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_property_clear_metadata(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    name: *const c_char,
+    key: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let name = unsafe { str_arg(name, "name") }?;
+        let key = unsafe { str_arg(key, "key") }?;
+        s.stage.clear_property_metadata(prim(p), name, key)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_remove_property(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    name: *const c_char,
+    out_removed: *mut bool,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let removed = s.stage.remove_property(prim(p), unsafe { str_arg(name, "name") }?)?;
+        unsafe { removed_out(out_removed, removed) };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_relationship_remove_target(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    name: *const c_char,
+    target: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let name = unsafe { str_arg(name, "name") }?;
+        let target = unsafe { str_arg(target, "target") }?;
+        s.stage.remove_target(prim(p), name, target)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_attribute_remove_connection(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    name: *const c_char,
+    source: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let name = unsafe { str_arg(name, "name") }?;
+        let source = unsafe { str_arg(source, "source") }?;
+        s.stage.remove_connection(prim(p), name, source)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_add_reference_with_offset(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    asset_path: *const c_char,
+    prim_path: *const c_char,
+    offset: f64,
+    scale: f64,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let asset = unsafe { opt_str(asset_path, "asset_path") }?;
+        let target = unsafe { opt_str(prim_path, "prim_path") }?;
+        s.stage
+            .add_reference_with_offset(prim(p), asset, target, offset, scale)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_add_payload_with_offset(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    asset_path: *const c_char,
+    prim_path: *const c_char,
+    offset: f64,
+    scale: f64,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let asset = unsafe { opt_str(asset_path, "asset_path") }?;
+        let target = unsafe { opt_str(prim_path, "prim_path") }?;
+        s.stage.add_payload_with_offset(prim(p), asset, target, offset, scale)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_remove_reference(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    asset_path: *const c_char,
+    prim_path: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let asset = unsafe { opt_str(asset_path, "asset_path") }?;
+        let target = unsafe { opt_str(prim_path, "prim_path") }?;
+        s.stage.remove_reference(prim(p), asset, target)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_remove_payload(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    asset_path: *const c_char,
+    prim_path: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let asset = unsafe { opt_str(asset_path, "asset_path") }?;
+        let target = unsafe { opt_str(prim_path, "prim_path") }?;
+        s.stage.remove_payload(prim(p), asset, target)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_remove_inherit(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    path: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        s.stage.remove_inherit(prim(p), unsafe { str_arg(path, "path") }?)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_remove_specialize(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    path: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        s.stage.remove_specialize(prim(p), unsafe { str_arg(path, "path") }?)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_remove_variant(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    variant_set: *const c_char,
+    variant: *const c_char,
+    out_removed: *mut bool,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let set = unsafe { str_arg(variant_set, "variant_set") }?;
+        let variant = unsafe { str_arg(variant, "variant") }?;
+        let removed = s.stage.remove_variant(prim(p), set, variant)?;
+        unsafe { removed_out(out_removed, removed) };
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_stage_define_preview_material(
+    stage: *mut TusdStage,
+    path: *const c_char,
+    out_material: *mut TusdPrim,
+) -> TusdStatus {
+    write_api!({
+        let out = unsafe { out_mut(out_material, "out_material") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        *out = s
+            .stage
+            .define_preview_material(unsafe { str_arg(path, "path") }?)?
+            .index();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_material_set_preview_input(
+    stage: *mut TusdStage,
+    material: TusdPrim,
+    input: *const c_char,
+    value: *const TusdValue,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let input = unsafe { str_arg(input, "input") }?;
+        let v = unsafe { value.as_ref() }.ok_or_else(|| invalid("value must not be null"))?;
+        s.stage.set_preview_input(prim(material), input, &v.value)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_material_set_preview_texture(
+    stage: *mut TusdStage,
+    material: TusdPrim,
+    input: *const c_char,
+    asset_path: *const c_char,
+    out_texture: *mut TusdPrim,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let input = unsafe { str_arg(input, "input") }?;
+        let asset = unsafe { str_arg(asset_path, "asset_path") }?;
+        let texture = s.stage.set_preview_texture(prim(material), input, asset)?;
+        if let Some(out) = unsafe { out_texture.as_mut() } {
+            *out = texture.index();
+        }
+        Ok(())
+    })
+}
+
+unsafe fn matrices<'a>(ptr: *const f64, count: usize, what: &str) -> Result<&'a [[f64; 16]], Fail> {
+    unsafe { slice(ptr.cast::<[f64; 16]>(), count, what) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_instances(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    instances: *const super::TusdInstancesView,
+    time: *const f64,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let v = unsafe { instances.as_ref() }.ok_or_else(|| invalid("instances must not be null"))?;
+        let prototypes = unsafe { slice(v.prototypes, v.prototype_count, "prototypes") }?;
+        let ids = if v.ids.is_null() {
+            Vec::new()
+        } else {
+            unsafe { slice(v.ids, v.count, "ids") }?.to_vec()
+        };
+        let instances = core::Instances {
+            prototypes: prototypes.iter().map(|&p| prim(p)).collect(),
+            proto_indices: unsafe { slice(v.proto_indices, v.count, "proto_indices") }?.to_vec(),
+            ids,
+            transforms: unsafe { matrices(v.transforms, v.count, "transforms") }?.to_vec(),
+        };
+        s.stage.set_instances(prim(p), &instances, unsafe { time_arg(time) })?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_stage_define_skeleton(
+    stage: *mut TusdStage,
+    path: *const c_char,
+    joints: *const *const c_char,
+    joint_count: usize,
+    bind_transforms: *const f64,
+    rest_transforms: *const f64,
+    out_skeleton: *mut TusdPrim,
+) -> TusdStatus {
+    write_api!({
+        let out = unsafe { out_mut(out_skeleton, "out_skeleton") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let path = unsafe { str_arg(path, "path") }?;
+        let joints = unsafe { strs(joints, joint_count, "joints") }?;
+        let bind = unsafe { matrices(bind_transforms, joint_count, "bind_transforms") }?;
+        let rest = if rest_transforms.is_null() {
+            &[][..]
+        } else {
+            unsafe { matrices(rest_transforms, joint_count, "rest_transforms") }?
+        };
+        *out = s.stage.define_skeleton(path, &joints, bind, rest)?.index();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_skel_animation(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    joints: *const *const c_char,
+    joint_count: usize,
+    local_transforms: *const f64,
+    time: *const f64,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let joints = unsafe { strs(joints, joint_count, "joints") }?;
+        let local = unsafe { matrices(local_transforms, joint_count, "local_transforms") }?;
+        s.stage
+            .set_skel_animation(prim(p), &joints, local, unsafe { time_arg(time) })?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_bind_skeleton(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    skeleton: TusdPrim,
+    animation: TusdPrim,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let animation = (animation != super::TUSD_NO_PRIM).then(|| prim(animation));
+        s.stage.bind_skeleton(prim(p), prim(skeleton), animation)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_skinning(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    joint_indices: *const i32,
+    joint_weights: *const f32,
+    count: usize,
+    influences_per_point: u32,
+    geom_bind_transform: *const f64,
+    joints: *const *const c_char,
+    joint_count: usize,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let indices = unsafe { slice(joint_indices, count, "joint_indices") }?;
+        let weights = unsafe { slice(joint_weights, count, "joint_weights") }?;
+        let bind = if geom_bind_transform.is_null() {
+            None
+        } else {
+            Some(unsafe { fixed::<f64, 16>(geom_bind_transform, "geom_bind_transform") }?)
+        };
+        let joints = unsafe { strs(joints, joint_count, "joints") }?;
+        s.stage
+            .set_skinning(prim(p), indices, weights, influences_per_point, bind, &joints)?;
+        Ok(())
+    })
+}
+
+unsafe fn vec3s<'a>(ptr: *const f32, count: usize, what: &str) -> Result<&'a [[f32; 3]], Fail> {
+    unsafe { slice(ptr.cast::<[f32; 3]>(), count, what) }
+}
+
+unsafe fn opt_vec3s<'a>(ptr: *const f32, count: usize, what: &str) -> Result<&'a [[f32; 3]], Fail> {
+    if ptr.is_null() {
+        Ok(&[])
+    } else {
+        unsafe { vec3s(ptr, count, what) }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_stage_define_blend_shape(
+    stage: *mut TusdStage,
+    path: *const c_char,
+    offsets: *const f32,
+    count: usize,
+    normal_offsets: *const f32,
+    point_indices: *const i32,
+    out_blend_shape: *mut TusdPrim,
+) -> TusdStatus {
+    write_api!({
+        let out = unsafe { out_mut(out_blend_shape, "out_blend_shape") }?;
+        let s = unsafe { stage_mut(stage) }?;
+        let path = unsafe { str_arg(path, "path") }?;
+        let offsets = unsafe { vec3s(offsets, count, "offsets") }?;
+        let normals = unsafe { opt_vec3s(normal_offsets, count, "normal_offsets") }?;
+        let indices = if point_indices.is_null() {
+            &[][..]
+        } else {
+            unsafe { slice(point_indices, count, "point_indices") }?
+        };
+        *out = s.stage.define_blend_shape(path, offsets, normals, indices)?.index();
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_blend_shape_inbetween(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    name: *const c_char,
+    weight: f32,
+    offsets: *const f32,
+    count: usize,
+    normal_offsets: *const f32,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let name = unsafe { str_arg(name, "name") }?;
+        let offsets = unsafe { vec3s(offsets, count, "offsets") }?;
+        let normals = unsafe { opt_vec3s(normal_offsets, count, "normal_offsets") }?;
+        s.stage
+            .set_blend_shape_inbetween(prim(p), name, weight, offsets, normals)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_blend_shapes(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    names: *const *const c_char,
+    targets: *const TusdPrim,
+    count: usize,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let names = unsafe { strs(names, count, "names") }?;
+        let targets: Vec<core::Prim> = unsafe { slice(targets, count, "targets") }?
+            .iter()
+            .map(|&t| prim(t))
+            .collect();
+        s.stage.set_blend_shapes(prim(p), &names, &targets)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_blend_shape_weights(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    names: *const *const c_char,
+    weights: *const f32,
+    count: usize,
+    time: *const f64,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let names = unsafe { strs(names, count, "names") }?;
+        let weights = unsafe { slice(weights, count, "weights") }?;
+        s.stage
+            .set_blend_shape_weights(prim(p), &names, weights, unsafe { time_arg(time) })?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_set_value_clips(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    clip_set: *const c_char,
+    asset_paths: *const *const c_char,
+    asset_count: usize,
+    prim_path: *const c_char,
+    active: *const f64,
+    active_count: usize,
+    times: *const f64,
+    time_count: usize,
+    manifest_asset_path: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let clip_set = unsafe { str_arg(clip_set, "clip_set") }?;
+        let assets = unsafe { strs(asset_paths, asset_count, "asset_paths") }?;
+        let prim_path = unsafe { str_arg(prim_path, "prim_path") }?;
+        let active = unsafe { slice(active.cast::<[f64; 2]>(), active_count, "active") }?;
+        let times = unsafe { slice(times.cast::<[f64; 2]>(), time_count, "times") }?;
+        let manifest = unsafe { opt_str(manifest_asset_path, "manifest_asset_path") }?;
+        s.stage
+            .set_value_clips(prim(p), clip_set, &assets, prim_path, active, times, manifest)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_prim_export_clip_manifest(
+    stage: *mut TusdStage,
+    p: TusdPrim,
+    clip_set: *const c_char,
+    path: *const c_char,
+) -> TusdStatus {
+    write_api!({
+        let s = unsafe { stage_mut(stage) }?;
+        let clip_set = unsafe { str_arg(clip_set, "clip_set") }?;
+        let path = unsafe { str_arg(path, "path") }?;
+        s.stage.export_clip_manifest(prim(p), clip_set, path)?;
+        Ok(())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tusd_relationship_add_target(
     stage: *mut TusdStage,

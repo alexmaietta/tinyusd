@@ -206,7 +206,11 @@ mod write {
                 current.clear();
             };
             for c in s.chars() {
-                if c.is_ascii_digit() || c == '.' || c == 'e' || (c == '-' && current.is_empty()) {
+                if c.is_ascii_digit()
+                    || c == '.'
+                    || c == 'e'
+                    || (c == '-' && (current.is_empty() || current.ends_with('e')))
+                {
                     current.push(c);
                 } else {
                     flush(&mut current, &mut text, &mut numbers);
@@ -261,6 +265,229 @@ mod write {
             .unwrap();
             assert!(text.contains("physics:lowerLimit") || text.contains("limit:"), "{text}");
         }
+    }
+
+    fn floats(stage: &Stage, prim: tinyusd_core::Prim, name: &str) -> Vec<f64> {
+        let mut v = tinyusd_core::Value::new();
+        assert!(stage.get(prim, name, None, &mut v).unwrap(), "{name}");
+        match v.type_name() {
+            "float3" | "point3f" => v.as_slice::<[f32; 3]>().unwrap()[0]
+                .iter()
+                .map(|&x| f64::from(x))
+                .collect(),
+            "double3" => v.as_slice::<[f64; 3]>().unwrap()[0].to_vec(),
+            other => panic!("{name} is {other}"),
+        }
+    }
+
+    /// A scene the writer used to flatten: a body posed by a rotateXYZ stack,
+    /// a joint aimed at a prim inside its body, and a mesh whose face subsets
+    /// carry their own physics materials.
+    fn rough_scene() -> (Stage, tinyusd_core::Prim) {
+        use tinyusd_core::{BaseType, Value};
+        let mut stage = Stage::create_in_memory(&OpenOptions::default()).unwrap();
+        stage.set_meters_per_unit(1.0).unwrap();
+        stage.set_kilograms_per_unit(1.0).unwrap();
+        stage.set_up_axis("Z").unwrap();
+        let body = stage.define_prim("/World/Body", "Xform").unwrap();
+        for (name, v) in [
+            ("xformOp:translate", [1.0f32, 2.0, 3.0]),
+            ("xformOp:rotateXYZ", [10.0, 20.0, 30.0]),
+            ("xformOp:scale", [2.0, 2.0, 2.0]),
+        ] {
+            stage.create_attribute(body, name, "float3", false).unwrap();
+            stage
+                .set(
+                    body,
+                    name,
+                    &Value::from_slice(BaseType::Float3, false, &[v]).unwrap(),
+                    None,
+                )
+                .unwrap();
+        }
+        let order = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"];
+        stage
+            .set(
+                body,
+                "xformOpOrder",
+                &Value::from_strings(BaseType::Token, true, &order).unwrap(),
+                None,
+            )
+            .unwrap();
+        stage.apply_api(body, "PhysicsRigidBodyAPI").unwrap();
+        let anchor = stage.define_prim("/World/Body/Anchor", "Xform").unwrap();
+        stage
+            .set_trs(
+                anchor,
+                [0.5, 0.0, 0.0],
+                [0.70710677, 0.0, 0.0, 0.70710677],
+                [1.0; 3],
+                None,
+            )
+            .unwrap();
+        let joint = stage.define_prim("/World/Hinge", "PhysicsRevoluteJoint").unwrap();
+        stage
+            .set_targets(joint, "physics:body0", &["/World/Body/Anchor"])
+            .unwrap();
+        stage
+            .set(
+                joint,
+                "physics:localPos0",
+                &Value::from_slice(BaseType::Float3, false, &[[0.0f32, 0.25, 0.0]]).unwrap(),
+                None,
+            )
+            .unwrap();
+
+        let mesh = stage.define_prim("/World/Body/Mesh", "Mesh").unwrap();
+        stage
+            .set_mesh(
+                mesh,
+                &[[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                &[3, 3],
+                &[0, 1, 2, 0, 2, 3],
+                None,
+            )
+            .unwrap();
+        stage.apply_api(mesh, "PhysicsCollisionAPI").unwrap();
+        stage.apply_api(mesh, "PhysicsMeshCollisionAPI").unwrap();
+        for name in ["Rubber", "Steel", "Ice"] {
+            let m = stage.define_prim(&format!("/World/{name}"), "Material").unwrap();
+            stage.apply_api(m, "PhysicsMaterialAPI").unwrap();
+        }
+        for (i, (name, material)) in [("Top", "Rubber"), ("Side", "Steel")].into_iter().enumerate() {
+            let subset = stage
+                .define_prim(&format!("/World/Body/Mesh/{name}"), "GeomSubset")
+                .unwrap();
+            stage.set(subset, "elementType", &Value::token("face"), None).unwrap();
+            stage.set(subset, "familyName", &Value::token("physics"), None).unwrap();
+            stage
+                .set(
+                    subset,
+                    "indices",
+                    &Value::from_slice(BaseType::Int, true, &[i as i32]).unwrap(),
+                    None,
+                )
+                .unwrap();
+            let m = stage.prim_at_path(&format!("/World/{material}")).unwrap().unwrap();
+            stage.bind_material(subset, m, "physics").unwrap();
+        }
+        let ice = stage.prim_at_path("/World/Ice").unwrap().unwrap();
+        stage.bind_material(mesh, ice, "physics").unwrap();
+        (stage, body)
+    }
+
+    #[test]
+    fn write_back_keeps_ops_anchors_and_subset_materials() {
+        let (mut stage, body) = rough_scene();
+        let options = PhysicsOptions::default();
+        let before = stage.physics(&options).unwrap();
+        let world = stage.world_transform(body, None).unwrap();
+        // Written inside a batch, which now queues schemas and bindings.
+        stage
+            .edit(|s| s.write_physics(&before, &PhysicsWriteOptions { poses: true }))
+            .unwrap();
+        let after = stage.physics(&options).unwrap();
+        assert_close(
+            &format!("{:?}", without_diagnostics(before.clone())),
+            &format!("{:?}", without_diagnostics(after)),
+        );
+
+        let mut order = tinyusd_core::Value::new();
+        assert!(stage.get(body, "xformOpOrder", None, &mut order).unwrap());
+        assert_eq!(
+            order.strings(),
+            ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        );
+        let rotate = floats(&stage, body, "xformOp:rotateXYZ");
+        assert!(
+            rotate.iter().zip([10.0, 20.0, 30.0]).all(|(a, b)| (a - b).abs() < 1e-3),
+            "{rotate:?}"
+        );
+        let again = stage.world_transform(body, None).unwrap();
+        assert!(world.iter().zip(again).all(|(a, b)| (a - b).abs() < 1e-5));
+
+        let joint = stage.prim_at_path("/World/Hinge").unwrap().unwrap();
+        assert_eq!(
+            stage.targets(joint, "physics:body0", false).unwrap(),
+            ["/World/Body/Anchor"]
+        );
+        let pos = floats(&stage, joint, "physics:localPos0");
+        assert!(
+            pos.iter().zip([0.0, 0.25, 0.0]).all(|(a, b)| (a - b).abs() < 1e-5),
+            "{pos:?}"
+        );
+
+        let shape = before
+            .shapes
+            .iter()
+            .find(|s| s.materials.len() == 3)
+            .expect("the mesh collider");
+        let names: Vec<&str> = shape.materials.iter().map(|&m| stage.path(m).unwrap()).collect();
+        assert_eq!(names, ["/World/Rubber", "/World/Steel", "/World/Ice"]);
+
+        let mut swapped = shape.clone();
+        swapped.materials.swap(0, 1);
+        stage.write_shape(&swapped).unwrap();
+        let now = stage.physics(&options).unwrap();
+        let shape = now.shapes.iter().find(|s| s.prim == swapped.prim).unwrap();
+        let names: Vec<&str> = shape.materials.iter().map(|&m| stage.path(m).unwrap()).collect();
+        assert_eq!(names, ["/World/Steel", "/World/Rubber", "/World/Ice"]);
+        swapped.materials.push(swapped.materials[0]);
+        assert!(
+            stage.write_shape(&swapped).is_err(),
+            "four materials can't map onto two subsets and the mesh"
+        );
+    }
+
+    #[test]
+    fn poses_fill_the_ops_a_body_has() {
+        use tinyusd_core::{BaseType, Value};
+        let mut stage = Stage::create_in_memory(&OpenOptions::default()).unwrap();
+        let moved = stage.define_prim("/Moved", "Cube").unwrap();
+        stage
+            .create_attribute(moved, "xformOp:translate", "float3", false)
+            .unwrap();
+        stage
+            .set(
+                moved,
+                "xformOpOrder",
+                &Value::from_strings(BaseType::Token, true, &["xformOp:translate"]).unwrap(),
+                None,
+            )
+            .unwrap();
+        let fresh = stage.define_prim("/Fresh", "Cube").unwrap();
+        let mut body = RigidBody::new(moved);
+        body.position = [1.0, 2.0, 3.0];
+        stage.write_rigid_body(&body, true).unwrap();
+        let mut order = Value::new();
+        stage.get(moved, "xformOpOrder", None, &mut order).unwrap();
+        assert_eq!(
+            order.strings(),
+            ["xformOp:translate"],
+            "a pure translation fits the one op"
+        );
+        assert_eq!(floats(&stage, moved, "xformOp:translate"), [1.0, 2.0, 3.0]);
+
+        body.rotation = [0.70710677, 0.0, 0.70710677, 0.0];
+        stage.write_rigid_body(&body, true).unwrap();
+        stage.get(moved, "xformOpOrder", None, &mut order).unwrap();
+        assert_eq!(
+            order.strings(),
+            ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        );
+        let mut v = Value::new();
+        stage.get(moved, "xformOp:translate", None, &mut v).unwrap();
+        assert_eq!(v.type_name(), "float3", "an op keeps its precision");
+
+        let mut body = RigidBody::new(fresh);
+        body.position = [0.0, 0.0, 5.0];
+        stage.write_rigid_body(&body, true).unwrap();
+        stage.get(fresh, "xformOpOrder", None, &mut order).unwrap();
+        assert_eq!(
+            order.strings(),
+            ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        );
+        assert_eq!(stage.world_transform(fresh, None).unwrap()[14], 5.0);
     }
 
     #[test]

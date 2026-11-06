@@ -362,3 +362,527 @@ impl Stage {
         Err(crate::Error::FeatureDisabled("skel"))
     }
 }
+
+#[cfg(all(feature = "skel", feature = "write"))]
+impl Stage {
+    fn ensure_typed(&mut self, prim: Prim, type_name: &str) -> Result<()> {
+        match self.type_name(prim)?.as_str() {
+            t if t == type_name => Ok(()),
+            "" => self.set_type_name(prim, type_name),
+            other => Err(crate::Error::InvalidValue(format!(
+                "{} is a {other}, not a {type_name}",
+                self.path(prim)?
+            ))),
+        }
+    }
+
+    fn put_attr(
+        &mut self,
+        prim: Prim,
+        name: &str,
+        type_name: &str,
+        value: &crate::Value,
+        time: Option<f64>,
+    ) -> Result<()> {
+        if self.declared_type(prim, name)?.is_none() {
+            self.create_attribute(prim, name, type_name, false)?;
+        }
+        self.set(prim, name, value, time)
+    }
+
+    /// Defines a Skeleton at `path` with its joints, as paths such as
+    /// `hips/spine`, each after its parent, their world-space bind transforms
+    /// and, where given, their local rest transforms.
+    pub fn define_skeleton(
+        &mut self,
+        path: &str,
+        joints: &[&str],
+        bind_transforms: &[[f64; 16]],
+        rest_transforms: &[[f64; 16]],
+    ) -> Result<Prim> {
+        use crate::{BaseType, Error, Value};
+        check_joints(joints)?;
+        if bind_transforms.len() != joints.len()
+            || !(rest_transforms.is_empty() || rest_transforms.len() == joints.len())
+        {
+            return Err(Error::InvalidValue(format!(
+                "{} joints need as many bind transforms (not {}) and as many rest transforms or none (not {})",
+                joints.len(),
+                bind_transforms.len(),
+                rest_transforms.len()
+            )));
+        }
+        let skeleton = self.define_prim(path, "Skeleton")?;
+        self.set(
+            skeleton,
+            "joints",
+            &Value::from_strings(BaseType::Token, true, joints)?,
+            None,
+        )?;
+        let bind = Value::from_slice(BaseType::Matrix4d, true, bind_transforms)?;
+        self.set(skeleton, "bindTransforms", &bind, None)?;
+        if !rest_transforms.is_empty() {
+            let rest = Value::from_slice(BaseType::Matrix4d, true, rest_transforms)?;
+            self.set(skeleton, "restTransforms", &rest, None)?;
+        }
+        Ok(skeleton)
+    }
+
+    /// Writes a SkelAnimation's joints and, at `time`, their local transforms,
+    /// split into translations, rotations and scales. A prim with no type
+    /// becomes a SkelAnimation.
+    pub fn set_skel_animation(
+        &mut self,
+        prim: Prim,
+        joints: &[&str],
+        local_transforms: &[[f64; 16]],
+        time: Option<f64>,
+    ) -> Result<()> {
+        use crate::author::Pose;
+        use crate::{BaseType, Error, Value};
+        check_joints(joints)?;
+        if local_transforms.len() != joints.len() {
+            return Err(Error::InvalidValue(format!(
+                "{} joints need as many local transforms, not {}",
+                joints.len(),
+                local_transforms.len()
+            )));
+        }
+        let mut translations = Vec::with_capacity(joints.len());
+        let mut rotations = Vec::with_capacity(joints.len());
+        let mut scales = Vec::with_capacity(joints.len());
+        for (joint, m) in joints.iter().zip(local_transforms) {
+            let pose = Pose::from_matrix(m).ok_or_else(|| {
+                Error::InvalidValue(format!(
+                    "joint {joint}'s transform has shear or a zero scale, which an animation can't hold"
+                ))
+            })?;
+            translations.push(pose.translate.map(|v| v as f32));
+            rotations.push(pose.orient.map(|v| v as f32));
+            scales.push(pose.scale.map(|v| gf::f16::from_f64(v).to_bits()));
+        }
+        self.ensure_typed(prim, "SkelAnimation")?;
+        self.put_attr(
+            prim,
+            "joints",
+            "token[]",
+            &Value::from_strings(BaseType::Token, true, joints)?,
+            None,
+        )?;
+        self.put_attr(
+            prim,
+            "translations",
+            "float3[]",
+            &Value::from_slice(BaseType::Float3, true, &translations)?,
+            time,
+        )?;
+        self.put_attr(
+            prim,
+            "rotations",
+            "quatf[]",
+            &Value::from_slice(BaseType::Quatf, true, &rotations)?,
+            time,
+        )?;
+        self.put_attr(
+            prim,
+            "scales",
+            "half3[]",
+            &Value::from_slice(BaseType::Half3, true, &scales)?,
+            time,
+        )
+    }
+
+    /// Binds `prim`, a mesh or the SkelRoot above several, to `skeleton`, and
+    /// where given drives the skeleton with `animation`.
+    pub fn bind_skeleton(&mut self, prim: Prim, skeleton: Prim, animation: Option<Prim>) -> Result<()> {
+        if !self.has_api(prim, "SkelBindingAPI")? {
+            self.apply_api(prim, "SkelBindingAPI")?;
+        }
+        let target = self.path(skeleton)?.to_owned();
+        self.set_targets(prim, "skel:skeleton", &[&target])?;
+        if let Some(animation) = animation {
+            if !self.has_api(skeleton, "SkelBindingAPI")? {
+                self.apply_api(skeleton, "SkelBindingAPI")?;
+            }
+            let source = self.path(animation)?.to_owned();
+            self.set_targets(skeleton, "skel:animationSource", &[&source])?;
+        }
+        Ok(())
+    }
+
+    /// Writes how `prim`'s points follow the joints: `influences_per_point`
+    /// joint indices and weights for each point, or for the whole prim when it
+    /// moves rigidly with one set. `joints` reorders the skeleton's joints for
+    /// these indices where given, and `geom_bind_transform` places the prim
+    /// when it was bound.
+    pub fn set_skinning(
+        &mut self,
+        prim: Prim,
+        joint_indices: &[i32],
+        joint_weights: &[f32],
+        influences_per_point: u32,
+        geom_bind_transform: Option<&[f64; 16]>,
+        joints: &[&str],
+    ) -> Result<()> {
+        use crate::{BaseType, Error, Interpolation, Value};
+        let per = influences_per_point as usize;
+        if per == 0 || joint_indices.len() != joint_weights.len() || !joint_indices.len().is_multiple_of(per) {
+            return Err(Error::InvalidValue(format!(
+                "{} joint indices and {} weights don't make whole sets of {influences_per_point}",
+                joint_indices.len(),
+                joint_weights.len()
+            )));
+        }
+        if joint_indices.iter().any(|&i| i < 0) {
+            return Err(Error::InvalidValue("joint indices can't be negative".to_owned()));
+        }
+        let mut points = Value::new();
+        let point_count = self
+            .get(prim, "points", None, &mut points)
+            .ok()
+            .filter(|&found| found)
+            .map(|_| points.len());
+        let interpolation = match point_count {
+            Some(n) if joint_indices.len() == n * per => Interpolation::Vertex,
+            _ if joint_indices.len() == per => Interpolation::Constant,
+            None => Interpolation::Vertex,
+            Some(n) => {
+                return Err(Error::InvalidValue(format!(
+                    "{} points need {} joint indices, or {per} for a rigid bind, not {}",
+                    n,
+                    n * per,
+                    joint_indices.len()
+                )));
+            }
+        };
+        if !self.has_api(prim, "SkelBindingAPI")? {
+            self.apply_api(prim, "SkelBindingAPI")?;
+        }
+        let element = influences_per_point as i32;
+        let indices = Value::from_slice(BaseType::Int, true, joint_indices)?;
+        self.set_primvar(
+            prim,
+            "skel:jointIndices",
+            "int[]",
+            &indices,
+            interpolation,
+            None,
+            element,
+            None,
+        )?;
+        let weights = Value::from_slice(BaseType::Float, true, joint_weights)?;
+        self.set_primvar(
+            prim,
+            "skel:jointWeights",
+            "float[]",
+            &weights,
+            interpolation,
+            None,
+            element,
+            None,
+        )?;
+        if let Some(m) = geom_bind_transform {
+            let value = Value::from_slice(BaseType::Matrix4d, false, &[*m])?;
+            self.put_attr(prim, "primvars:skel:geomBindTransform", "matrix4d", &value, None)?;
+        }
+        if !joints.is_empty() {
+            check_joints(joints)?;
+            let value = Value::from_strings(BaseType::Token, true, joints)?;
+            if self.declared_type(prim, "skel:joints")?.is_none() {
+                self.create_attribute(prim, "skel:joints", "token[]", true)?;
+            }
+            self.set(prim, "skel:joints", &value, None)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "skel", feature = "write"))]
+impl Stage {
+    fn check_offsets(offsets: &[[f32; 3]], normal_offsets: &[[f32; 3]], what: &str) -> Result<()> {
+        if !(normal_offsets.is_empty() || normal_offsets.len() == offsets.len()) {
+            return Err(crate::Error::InvalidValue(format!(
+                "{what} has {} offsets, so it takes as many normal offsets or none, not {}",
+                offsets.len(),
+                normal_offsets.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Defines a BlendShape at `path`: the point `offsets` it adds at full
+    /// weight, their `normal_offsets` where given, and the `point_indices`
+    /// they apply to, or every point where empty.
+    pub fn define_blend_shape(
+        &mut self,
+        path: &str,
+        offsets: &[[f32; 3]],
+        normal_offsets: &[[f32; 3]],
+        point_indices: &[i32],
+    ) -> Result<Prim> {
+        use crate::{BaseType, Error, Value};
+        Self::check_offsets(offsets, normal_offsets, path)?;
+        if !point_indices.is_empty() {
+            if point_indices.len() != offsets.len() {
+                return Err(Error::InvalidValue(format!(
+                    "{} offsets need as many point indices or none, not {}",
+                    offsets.len(),
+                    point_indices.len()
+                )));
+            }
+            let mut seen = HashSet::new();
+            if let Some(bad) = point_indices.iter().find(|&&i| i < 0 || !seen.insert(i)) {
+                return Err(Error::InvalidValue(format!(
+                    "point index {bad} is negative or listed twice"
+                )));
+            }
+        }
+        let shape = self.define_prim(path, "BlendShape")?;
+        self.set(
+            shape,
+            "offsets",
+            &Value::from_slice(BaseType::Float3, true, offsets)?,
+            None,
+        )?;
+        if !normal_offsets.is_empty() {
+            let value = Value::from_slice(BaseType::Float3, true, normal_offsets)?;
+            self.set(shape, "normalOffsets", &value, None)?;
+        }
+        if !point_indices.is_empty() {
+            let value = Value::from_slice(BaseType::Int, true, point_indices)?;
+            self.set(shape, "pointIndices", &value, None)?;
+        }
+        Ok(shape)
+    }
+
+    /// Adds the inbetween shape `name` to `blend_shape`, the offsets it
+    /// reaches at `weight`, between 0 and 1 or beyond, with their normal
+    /// offsets where given.
+    pub fn set_blend_shape_inbetween(
+        &mut self,
+        blend_shape: Prim,
+        name: &str,
+        weight: f32,
+        offsets: &[[f32; 3]],
+        normal_offsets: &[[f32; 3]],
+    ) -> Result<()> {
+        use crate::{BaseType, Error, Value};
+        if name.is_empty() || name.ends_with(":normalOffsets") || !name.split(':').all(sdf::Path::is_valid_identifier) {
+            return Err(Error::InvalidValue(format!("'{name}' is not an inbetween name")));
+        }
+        if !weight.is_finite() || weight == 0.0 || weight == 1.0 {
+            return Err(Error::InvalidValue(format!(
+                "an inbetween's weight can't be {weight}; 0 and 1 are the base and the full shape"
+            )));
+        }
+        Self::check_offsets(offsets, normal_offsets, name)?;
+        if self.type_name(blend_shape)? != "BlendShape" {
+            return Err(Error::InvalidValue(format!(
+                "{} is not a BlendShape",
+                self.path(blend_shape)?
+            )));
+        }
+        let attr = format!("inbetweens:{name}");
+        if self.declared_type(blend_shape, &attr)?.is_none() {
+            self.create_attribute(blend_shape, &attr, "point3f[]", true)?;
+        }
+        self.set(
+            blend_shape,
+            &attr,
+            &Value::from_slice(BaseType::Float3, true, offsets)?,
+            None,
+        )?;
+        self.set_attribute_metadata(blend_shape, &attr, "weight", openusd::vt::Value::Float(weight))?;
+        if !normal_offsets.is_empty() {
+            let normals = format!("{attr}:normalOffsets");
+            if self.declared_type(blend_shape, &normals)?.is_none() {
+                self.create_attribute(blend_shape, &normals, "vector3f[]", true)?;
+            }
+            self.set(
+                blend_shape,
+                &normals,
+                &Value::from_slice(BaseType::Float3, true, normal_offsets)?,
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Binds blend shapes to `prim`: `names`, as the animation's
+    /// `blendShapes` call them, each driving the BlendShape in `targets` at
+    /// the same place.
+    pub fn set_blend_shapes(&mut self, prim: Prim, names: &[&str], targets: &[Prim]) -> Result<()> {
+        use crate::{BaseType, Error, Value};
+        check_names(names)?;
+        if names.len() != targets.len() {
+            return Err(Error::InvalidValue(format!(
+                "{} blend shape names need as many targets, not {}",
+                names.len(),
+                targets.len()
+            )));
+        }
+        let paths: Vec<String> = targets
+            .iter()
+            .map(|&t| self.path(t).map(str::to_owned))
+            .collect::<Result<_>>()?;
+        if !self.has_api(prim, "SkelBindingAPI")? {
+            self.apply_api(prim, "SkelBindingAPI")?;
+        }
+        self.set(
+            prim,
+            "skel:blendShapes",
+            &Value::from_strings(BaseType::Token, true, names)?,
+            None,
+        )?;
+        let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+        self.set_targets(prim, "skel:blendShapeTargets", &paths)
+    }
+
+    /// Writes a SkelAnimation's blend shape `names` and, at `time`, their
+    /// weights.
+    pub fn set_blend_shape_weights(
+        &mut self,
+        animation: Prim,
+        names: &[&str],
+        weights: &[f32],
+        time: Option<f64>,
+    ) -> Result<()> {
+        use crate::{BaseType, Error, Value};
+        check_names(names)?;
+        if names.len() != weights.len() {
+            return Err(Error::InvalidValue(format!(
+                "{} blend shape names need as many weights, not {}",
+                names.len(),
+                weights.len()
+            )));
+        }
+        self.ensure_typed(animation, "SkelAnimation")?;
+        self.put_attr(
+            animation,
+            "blendShapes",
+            "token[]",
+            &Value::from_strings(BaseType::Token, true, names)?,
+            None,
+        )?;
+        self.put_attr(
+            animation,
+            "blendShapeWeights",
+            "float[]",
+            &Value::from_slice(BaseType::Float, true, weights)?,
+            time,
+        )
+    }
+}
+
+/// Blend shape names must be identifiers, each listed once.
+#[cfg(all(feature = "skel", feature = "write"))]
+fn check_names(names: &[&str]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for name in names {
+        if !sdf::Path::is_valid_identifier(name) || !seen.insert(*name) {
+            return Err(crate::Error::InvalidValue(format!(
+                "blend shape name '{name}' is not an identifier or is listed twice"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Joint paths must be valid and unique, each after its parent.
+#[cfg(all(feature = "skel", feature = "write"))]
+fn check_joints(joints: &[&str]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for joint in joints {
+        let valid = !joint.is_empty() && joint.split('/').all(sdf::Path::is_valid_identifier);
+        if !valid {
+            return Err(crate::Error::InvalidValue(format!(
+                "'{joint}' is not a joint path such as hips/spine"
+            )));
+        }
+        if let Some((parent, _)) = joint.rsplit_once('/')
+            && !seen.contains(parent)
+        {
+            return Err(crate::Error::InvalidValue(format!(
+                "joint {joint} comes before its parent {parent}"
+            )));
+        }
+        if !seen.insert(*joint) {
+            return Err(crate::Error::InvalidValue(format!("joint {joint} is listed twice")));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(not(feature = "skel"), feature = "write"))]
+impl Stage {
+    pub fn define_skeleton(
+        &mut self,
+        _path: &str,
+        _joints: &[&str],
+        _bind_transforms: &[[f64; 16]],
+        _rest_transforms: &[[f64; 16]],
+    ) -> Result<Prim> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+
+    pub fn set_skel_animation(
+        &mut self,
+        _prim: Prim,
+        _joints: &[&str],
+        _local_transforms: &[[f64; 16]],
+        _time: Option<f64>,
+    ) -> Result<()> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+
+    pub fn bind_skeleton(&mut self, _prim: Prim, _skeleton: Prim, _animation: Option<Prim>) -> Result<()> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+
+    pub fn define_blend_shape(
+        &mut self,
+        _path: &str,
+        _offsets: &[[f32; 3]],
+        _normal_offsets: &[[f32; 3]],
+        _point_indices: &[i32],
+    ) -> Result<Prim> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+
+    pub fn set_blend_shape_inbetween(
+        &mut self,
+        _blend_shape: Prim,
+        _name: &str,
+        _weight: f32,
+        _offsets: &[[f32; 3]],
+        _normal_offsets: &[[f32; 3]],
+    ) -> Result<()> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+
+    pub fn set_blend_shapes(&mut self, _prim: Prim, _names: &[&str], _targets: &[Prim]) -> Result<()> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+
+    pub fn set_blend_shape_weights(
+        &mut self,
+        _animation: Prim,
+        _names: &[&str],
+        _weights: &[f32],
+        _time: Option<f64>,
+    ) -> Result<()> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+
+    pub fn set_skinning(
+        &mut self,
+        _prim: Prim,
+        _joint_indices: &[i32],
+        _joint_weights: &[f32],
+        _influences_per_point: u32,
+        _geom_bind_transform: Option<&[f64; 16]>,
+        _joints: &[&str],
+    ) -> Result<()> {
+        Err(crate::Error::FeatureDisabled("skel"))
+    }
+}

@@ -77,3 +77,103 @@ impl Stage {
         }))
     }
 }
+
+#[cfg(feature = "write")]
+impl Stage {
+    /// Writes a PointInstancer's prototypes and per-instance arrays from
+    /// `instances`, the inverse of `instancer_instances` read without the
+    /// prototypes' own transforms. Each transform is split into `positions`,
+    /// `orientationsf` and `scales`, so it can't have shear. `ids` are written
+    /// where given. A prim with no type becomes a PointInstancer.
+    pub fn set_instances(&mut self, prim: Prim, instances: &Instances, time: Option<f64>) -> Result<()> {
+        use crate::author::Pose;
+        use crate::{BaseType, Error, Value};
+        let n = instances.transforms.len();
+        if instances.proto_indices.len() != n || !(instances.ids.is_empty() || instances.ids.len() == n) {
+            return Err(Error::InvalidValue(format!(
+                "{n} transforms need as many proto indices (not {}) and as many ids or none (not {})",
+                instances.proto_indices.len(),
+                instances.ids.len()
+            )));
+        }
+        if let Some(bad) = instances
+            .proto_indices
+            .iter()
+            .find(|&&i| i < 0 || i as usize >= instances.prototypes.len())
+        {
+            return Err(Error::InvalidValue(format!(
+                "proto index {bad} is out of range for {} prototypes",
+                instances.prototypes.len()
+            )));
+        }
+        let mut positions = Vec::with_capacity(n);
+        let mut orientations = Vec::with_capacity(n);
+        let mut scales = Vec::with_capacity(n);
+        for (i, m) in instances.transforms.iter().enumerate() {
+            let pose = Pose::from_matrix(m).ok_or_else(|| {
+                Error::InvalidValue(format!(
+                    "instance {i}'s transform has shear or a zero scale, which an instancer can't hold"
+                ))
+            })?;
+            positions.push(pose.translate.map(|v| v as f32));
+            orientations.push(pose.orient.map(|v| v as f32));
+            scales.push(pose.scale.map(|v| v as f32));
+        }
+        match self.type_name(prim)?.as_str() {
+            "PointInstancer" => {}
+            "" => self.set_type_name(prim, "PointInstancer")?,
+            other => {
+                return Err(Error::InvalidValue(format!(
+                    "{} is a {other}, not a PointInstancer",
+                    self.path(prim)?
+                )));
+            }
+        }
+        let targets: Vec<String> = instances
+            .prototypes
+            .iter()
+            .map(|&p| self.path(p).map(str::to_owned))
+            .collect::<Result<_>>()?;
+        let targets: Vec<&str> = targets.iter().map(String::as_str).collect();
+        self.set_targets(prim, "prototypes", &targets)?;
+        let put = |s: &mut Self, name: &str, type_name: &str, value: Value| -> Result<()> {
+            if s.declared_type(prim, name)?.is_none() {
+                s.create_attribute(prim, name, type_name, false)?;
+            }
+            s.set(prim, name, &value, time)
+        };
+        put(
+            self,
+            "protoIndices",
+            "int[]",
+            Value::from_slice(BaseType::Int, true, &instances.proto_indices)?,
+        )?;
+        put(
+            self,
+            "positions",
+            "point3f[]",
+            Value::from_slice(BaseType::Float3, true, &positions)?,
+        )?;
+        put(
+            self,
+            "orientationsf",
+            "quatf[]",
+            Value::from_slice(BaseType::Quatf, true, &orientations)?,
+        )?;
+        put(
+            self,
+            "scales",
+            "float3[]",
+            Value::from_slice(BaseType::Float3, true, &scales)?,
+        )?;
+        if !instances.ids.is_empty() {
+            put(
+                self,
+                "ids",
+                "int64[]",
+                Value::from_slice(BaseType::Int64, true, &instances.ids)?,
+            )?;
+        }
+        Ok(())
+    }
+}
