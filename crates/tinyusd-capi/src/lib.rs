@@ -8,10 +8,12 @@ use std::ptr;
 
 use tinyusd_core as core;
 
+mod schemas;
 mod write;
+pub use schemas::*;
 pub use write::*;
 
-pub const TUSD_ABI_VERSION: u32 = 9;
+pub const TUSD_ABI_VERSION: u32 = 10;
 
 pub type TusdPrim = u32;
 
@@ -44,6 +46,7 @@ pub enum TusdFeature {
     Media = 1 << 6,
     Semantics = 1 << 7,
     Write = 1 << 8,
+    Schemas = 1 << 9,
 }
 
 #[repr(C)]
@@ -1283,6 +1286,17 @@ pub unsafe extern "C" fn tusd_value_free(value: *mut TusdValue) {
     if !value.is_null() {
         drop(unsafe { Box::from_raw(value) });
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_value_copy(dst: *mut TusdValue, src: *const TusdValue) -> TusdStatus {
+    guard(|| {
+        let src = unsafe { src.as_ref() }.ok_or_else(|| invalid("src must not be null"))?;
+        let dst = unsafe { out_mut(dst, "dst") }?;
+        dst.value = src.value.clone();
+        dst.sync();
+        Ok(())
+    })
 }
 
 #[unsafe(no_mangle)]

@@ -73,7 +73,7 @@ fn base_type(raw: u32) -> Result<core::BaseType, Fail> {
     }
 }
 
-unsafe fn strs<'a>(items: *const *const c_char, count: usize, what: &str) -> Result<Vec<&'a str>, Fail> {
+pub(crate) unsafe fn strs<'a>(items: *const *const c_char, count: usize, what: &str) -> Result<Vec<&'a str>, Fail> {
     if count == 0 {
         return Ok(Vec::new());
     }

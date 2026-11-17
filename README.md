@@ -426,6 +426,39 @@ stage = tinyusd.Stage.open("robot.usd", schemas=["/path/to/chrono.schema/resourc
 
 With a schema registered, `is_a` follows its bases (a typed schema derived from `Xformable` is an `Xformable`), `has_api` knows its API schemas, `get` returns its fallback values where nothing is authored, and `attribute_names` lists its properties. `attribute_info(...).has_authored_value` still tells authored values from fallbacks. Without it, the prims still load and authored values read normally, but the type is unknown to `is_a` and there are no fallbacks. Applied API schemas are still reported by `applied_schemas` and `has_api` from their authored names, whereas upstream's `GetAppliedSchemas` leaves out schemas it doesn't know. In C, set `schema_paths` and `schema_path_count` in `TusdOpenOptions`; a schema that can't be read fails the open with `TUSD_STATUS_SCHEMA_FAILED`.
 
+A family in `schema_paths` replaces the built-in family of the same name (the plugin's `Name`, such as `usdGeom`). tinyusd builds in OpenUSD v26.05's families, so passing a newer release's `usdGeom` plugin folder opens the stage with that release's classes, such as v26.11's `BackPlateAPI`. The metadata fields the built-in family declares, like `upAxis` and `metersPerUnit`, stay registered.
+
+## Schema libraries
+
+The `schemas` feature reads USD schema libraries the way `usdGenSchema` does, for code generators that would otherwise need OpenUSD's Python. Give it a `schema.usda` and the folders its `@usd/schema.usda@`-style sublayers resolve against.
+
+```cpp
+auto geom = tinyusd::read_schema_library("schemas/usdGeom/schema.usda", {"schemas"});
+const auto* mesh = geom.find_class("Mesh");          // kind ConcreteTyped, bases PointBased ... Typed
+const auto* scheme = mesh->find_property("subdivisionScheme");
+// scheme->declared_by == "Mesh", scheme->fallback->string() == "catmullClark", scheme->allowed_tokens
+geom.write_plugin("out/usdGeom");                    // generatedSchema.usda and plugInfo.json
+auto nodes = tinyusd::read_shader_defs("schemas/usdShaders/shaderDefs.usda");
+```
+
+```python
+geom = tinyusd.read_schema_library("schemas/usdGeom/schema.usda", ["schemas"])
+mesh = geom.find_class("Mesh")
+print(mesh.kind, mesh.bases, [p.name for p in mesh.properties if p.declared_by == "Mesh"])
+```
+
+- **Classes** have a name, the C++ name `usdGenSchema` would give them, a kind (`abstractBase`, `abstractTyped`, `concreteTyped`, `nonAppliedAPI`, `singleApplyAPI` or `multipleApplyAPI`), their bases nearest first, `apiSchemaCanOnlyApplyTo`, `apiSchemaAutoApplyTo`, `propertyNamespacePrefix`, allowed instance names, built-in `apiSchemas`, documentation and `customData`.
+- **Properties** are every property a class has, its own and inherited, each naming the class that declared it. Each has its value type, variability, fallback, allowed tokens, display group and name, documentation and `customData`. A multiple-apply schema's properties keep their declared names, without the namespace prefix and instance name.
+- **The library** has its name and class prefix, `skipCodeGeneration`, its `/GLOBAL` `customData` and its `libraryTokens`.
+- **Shader definitions** list each node's prim name, `info:id`, documentation and `sdrMetadata`, and its inputs and outputs with type, fallback, allowed tokens, whether they connect only to an interface, and `sdrMetadata`.
+- **Codeless plugins.** `write_plugin(dir)` writes the `generatedSchema.usda` and `plugInfo.json` `usdGenSchema` writes for a library with `skipCodeGeneration`, including the brief user documentation it takes from `userDoc/schemaUserDoc.usda` beside the schema. The plugin is a `resource` plugin rooted at its own folder, ready for `schema_paths` or `PXR_PLUGINPATH_NAME`. Hand-written `plugInfo.json` entries such as `SdfMetadata` are not carried over.
+
+`customData`, `/GLOBAL` and `sdrMetadata` come back as dictionaries. In Python they are `dict`s. In C and C++ a `TusdDictionary` (`tinyusd::Dictionary`) lists the keys at a `:`-separated path and reads the value there into a `Value`, the way prim metadata reads `customData:key`. A nested dictionary reads as an unsupported value whose type name is `dictionary`.
+
+In C, `tusd_schema_library_read` and `tusd_shader_defs_read` return handles that own every string, list, value and dictionary in the views read from them (`TusdSchemaClassView`, `TusdSchemaPropertyView`, `TusdShaderNodeView` and so on), until `tusd_schema_library_free` or `tusd_shader_defs_free`. Optional strings are `NULL` when absent, and a property with no fallback has a `NULL` `fallback`.
+
+The tests read every library of OpenUSD v26.11.1 (`usd`, `usdGeom`, `usdShade`, `usdVol`, `usdLux`, `usdRender`, `usdPhysics`) and its `shaderDefs.usda`, vendored in `tests/data/openusd-26.11.1`, and check that each written plugin matches USD's own `generatedSchema.usda` and the generated types of its `plugInfo.json`.
+
 ## Payloads
 
 Open with `load_payloads` off to compose a stage without its payloads, then load just what you need. `loadable(root)` lists the prims that have payloads, and `load(prim, with_descendants)` and `unload(prim)` change what's loaded. Prim handles stay valid across loads and unloads, and the helpers' caches are reset automatically.
@@ -442,7 +475,7 @@ Open with `load_payloads` off to compose a stage without its payloads, then load
 - **Threads.** Use each stage from one thread at a time. Separate stages can be used on separate threads.
 - **Prim handles** belong to the stage that produced them. Passing one to a different stage is undefined in C; the C++ and Python wrappers reject it.
 - **Panics.** Internal panics never cross the boundary; they are returned as `TUSD_STATUS_PANIC`.
-- **Versioning.** `tusd_abi_version()` must equal `TUSD_ABI_VERSION`. `tusd_has_feature()` reports which schema families, and whether the write API (`TUSD_FEATURE_WRITE`), were compiled in. Without it, the write functions return `TUSD_STATUS_FEATURE_DISABLED`.
+- **Versioning.** `tusd_abi_version()` must equal `TUSD_ABI_VERSION`. `tusd_has_feature()` reports which schema families, and whether the write API (`TUSD_FEATURE_WRITE`) and schema reading (`TUSD_FEATURE_SCHEMAS`), were compiled in. Without them, the write and schema functions return `TUSD_STATUS_FEATURE_DISABLED`.
 - **Options.** Call `tusd_open_options_init` before setting fields. `struct_size` lets fields be added without breaking older callers.
 
 ## CMake
@@ -461,7 +494,7 @@ To build from source with cargo, leave `TINYUSD_USE_PREBUILT` off (the default).
 |---|---|---|
 | `TINYUSD_USE_PREBUILT` | `OFF` | Download a release archive instead of building with cargo |
 | `TINYUSD_STATIC` | `OFF` | Link a static library instead of a shared one |
-| `TINYUSD_FEATURES` | everything | Schema families and the write API to compile in: `shade;lux;skel;physics;vol;media;semantics;write` |
+| `TINYUSD_FEATURES` | everything | Schema families, the write API and schema reading to compile in: `shade;lux;skel;physics;vol;media;semantics;write;schemas` |
 | `TINYUSD_RELEASE_URL` | GitHub releases | Base URL for prebuilt archives (for mirrors) |
 | `TINYUSD_PREBUILT_URL` | empty | Exact archive URL; overrides `TINYUSD_RELEASE_URL` |
 | `TINYUSD_PREBUILT_SHA256` | empty | Expected archive hash |
@@ -511,6 +544,7 @@ packaging/            vcpkg port, Conan recipe, conda recipe and the test they s
 examples/             downstream importer examples (C++ and Python)
 fuzz/                 cargo-fuzz targets for the USDA, USDC and USDZ readers
 licenses/             license files of every third-party crate shipped in the library and wheels (generated)
+vendor/               openusd and openusd-build with the small changes listed under Vendored openusd
 pyproject.toml        Python package definition (maturin)
 ```
 
@@ -528,6 +562,15 @@ Two files are generated and checked by `cargo test -p tinyusd-capi`: the C heade
 ```sh
 TINYUSD_BLESS=1 cargo test -p tinyusd-capi
 ```
+
+### Vendored openusd
+
+`openusd` and `openusd-build` come from [mxpv/openusd](https://github.com/mxpv/openusd) at the same revision as `openusd-schemas`, copied into `vendor/` and swapped in through `[patch]` in `Cargo.toml`. Their manifests drop workspace inheritance, tests and fixtures, and their sources differ from upstream only by these changes, which belong upstream.
+
+- `openusd` reads an asset value written as a quoted string (`asset image = ""`), as C++ Sdf does. OpenUSD v26.11's `usdGeom/schema.usda` uses it.
+- `openusd-build` makes its `model` and `shader_defs` modules public, adds `Output::library` and `Builder::read_shader_defs`, keeps the authored `customData` of each class (`Class::custom_data`), each property declaration (`Site::custom_data`) and the root layer's `/GLOBAL` (`Library::global`), and reads `sdrMetadata` on shader nodes and ports. `Library::take_declarations`, which takes a crate-private type, becomes crate-private.
+
+To update, copy both crates from the new revision and reapply these changes.
 
 ### Fuzzing
 

@@ -161,7 +161,8 @@ fn shipped_packages() -> BTreeMap<(String, String), Package> {
         }
         for id in seen {
             let p = packages[id];
-            if p["source"].is_null() {
+            let vendored = Path::new(p["manifest_path"].as_str().unwrap()).starts_with(repo_root().join("vendor"));
+            if p["source"].is_null() && !vendored {
                 continue;
             }
             let name = p["name"].as_str().unwrap().to_owned();

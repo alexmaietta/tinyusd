@@ -23,8 +23,8 @@ class TinyusdConan(ConanFile):
     topics = ("usd", "openusd", "3d", "scene-description", "importer")
     package_type = "library"
     settings = "os", "arch", "compiler", "build_type"
-    options = {"shared": [True, False], "write": [True, False], **{f"with_{f}": [True, False] for f in FAMILIES}}
-    default_options = {"shared": False, "write": True, **{f"with_{f}": True for f in FAMILIES}}
+    options = {"shared": [True, False], "write": [True, False], "schemas": [True, False], **{f"with_{f}": [True, False] for f in FAMILIES}}
+    default_options = {"shared": False, "write": True, "schemas": True, **{f"with_{f}": True for f in FAMILIES}}
 
     @property
     def _root(self):
@@ -38,6 +38,7 @@ class TinyusdConan(ConanFile):
         for pattern in ("CMakeLists.txt", "Cargo.toml", "Cargo.lock", "LICENSE", "cmake/*", "include/*", "licenses/*"):
             copy(self, pattern, self._root, self.export_sources_folder)
         copy(self, "crates/*", self._root, self.export_sources_folder, excludes=("*/tests/*", "*/__pycache__/*"))
+        copy(self, "vendor/*", self._root, self.export_sources_folder)
 
     def layout(self):
         cmake_layout(self)
@@ -54,6 +55,8 @@ class TinyusdConan(ConanFile):
         features = [f for f in FAMILIES if self.options.get_safe(f"with_{f}")]
         if self.options.write:
             features.append("write")
+        if self.options.schemas:
+            features.append("schemas")
         tc = CMakeToolchain(self)
         tc.cache_variables["TINYUSD_STATIC"] = not self.options.shared
         tc.cache_variables["TINYUSD_FEATURES"] = ";".join(features)

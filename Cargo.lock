@@ -387,7 +387,6 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "openusd"
 version = "0.8.0"
-source = "git+https://github.com/mxpv/openusd?rev=78622a8b#78622a8badf427b5d1e853eb17b5963bf8e765ae"
 dependencies = [
  "bitflags",
  "bytemuck",
@@ -409,7 +408,6 @@ dependencies = [
 [[package]]
 name = "openusd-build"
 version = "0.8.0"
-source = "git+https://github.com/mxpv/openusd?rev=78622a8b#78622a8badf427b5d1e853eb17b5963bf8e765ae"
 dependencies = [
  "openusd",
  "prettyplease",
@@ -780,6 +778,7 @@ dependencies = [
  "bytemuck",
  "half",
  "openusd",
+ "openusd-build",
  "openusd-schemas",
  "serde_json",
  "tempfile",

@@ -2,6 +2,8 @@
 pub(crate) mod author;
 mod helpers;
 mod host;
+#[cfg(feature = "schemas")]
+mod schema_library;
 mod schemas;
 mod stage;
 mod value;
@@ -17,6 +19,11 @@ pub use helpers::{
     SkelBinding, SkeletonPose, SkinBinding, SkinningMethod, SubShape, Triangles,
 };
 pub use host::AssetResolver;
+#[cfg(feature = "schemas")]
+pub use schema_library::{
+    Dictionary, LibraryToken, SchemaClass, SchemaKind, SchemaLibrary, SchemaProperty, ShaderNode, ShaderPort,
+    read_shader_defs,
+};
 pub use stage::{AttributeInfo, OpenOptions, Prim, PrimFlags, Specifier, Stage, TraverseFlags};
 pub use value::{BaseType, Value};
 
@@ -56,6 +63,7 @@ pub enum Feature {
     Media = 1 << 6,
     Semantics = 1 << 7,
     Write = 1 << 8,
+    Schemas = 1 << 9,
 }
 
 pub const fn features() -> u32 {
@@ -83,6 +91,9 @@ pub const fn features() -> u32 {
     }
     if cfg!(feature = "write") {
         bits |= Feature::Write as u32;
+    }
+    if cfg!(feature = "schemas") {
+        bits |= Feature::Schemas as u32;
     }
     bits
 }

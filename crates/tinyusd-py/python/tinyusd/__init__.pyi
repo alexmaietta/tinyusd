@@ -406,3 +406,77 @@ class Stage:
     def set_documentation(self, text: str) -> None: ...
 
 def features() -> list[str]: ...
+
+SchemaKind = Literal[
+    "abstractBase", "abstractTyped", "concreteTyped", "nonAppliedAPI", "singleApplyAPI", "multipleApplyAPI"
+]
+
+class SchemaProperty:
+    name: str
+    declared_by: str
+    relationship: bool
+    type_name: str
+    uniform: bool
+    fallback: Any
+    allowed_tokens: list[str]
+    display_group: Optional[str]
+    display_name: Optional[str]
+    documentation: Optional[str]
+    custom_data: dict[str, Any]
+
+class SchemaClass:
+    name: str
+    cpp_name: str
+    kind: SchemaKind
+    bases: list[str]
+    can_only_apply_to: list[str]
+    auto_apply_to: list[str]
+    property_namespace_prefix: Optional[str]
+    allowed_instance_names: list[str]
+    api_schemas: list[str]
+    documentation: Optional[str]
+    custom_data: dict[str, Any]
+    properties: list[SchemaProperty]
+    def find_property(self, name: str) -> Optional[SchemaProperty]: ...
+
+class LibraryToken:
+    name: str
+    value: str
+    documentation: Optional[str]
+
+class SchemaLibrary:
+    name: str
+    prefix: str
+    skip_code_generation: bool
+    global_data: dict[str, Any]
+    tokens: list[LibraryToken]
+    classes: list[SchemaClass]
+    layers: list[str]
+    generated_schema: str
+    plug_info: str
+    def find_class(self, name: str) -> Optional[SchemaClass]: ...
+    def write_plugin(self, dir: Union[str, PathLike[str]]) -> None: ...
+
+class ShaderPort:
+    name: str
+    type_name: str
+    fallback: Any
+    allowed_tokens: list[str]
+    interface_only: bool
+    documentation: Optional[str]
+    sdr_metadata: dict[str, Any]
+
+class ShaderNode:
+    name: str
+    id: str
+    documentation: Optional[str]
+    sdr_metadata: dict[str, Any]
+    inputs: list[ShaderPort]
+    outputs: list[ShaderPort]
+
+def read_schema_library(
+    path: Union[str, PathLike[str]], search_paths: list[Union[str, PathLike[str]]] = ...
+) -> SchemaLibrary: ...
+def read_shader_defs(
+    path: Union[str, PathLike[str]], search_paths: list[Union[str, PathLike[str]]] = ...
+) -> list[ShaderNode]: ...

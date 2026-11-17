@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use openusd::sdf;
 use openusd::tf;
-use openusd::usd::{FamilySource, SchemaRegistry};
+use openusd::usd::{FamilySource, SchemaFamily, SchemaRegistry, SchemaRegistryBuilder};
 use serde_json::Value as Json;
 
 use crate::{Error, Result};
@@ -155,23 +155,35 @@ fn families_from(path: &Path, known: &SchemaRegistry) -> Result<Vec<Family>> {
 
 fn build(paths: &[PathBuf]) -> Result<Arc<SchemaRegistry>> {
     let known = openusd_schemas::schema_registry();
-    let mut builder = SchemaRegistry::builder();
-    for family in openusd_schemas::ALL {
-        builder = builder.register(family);
-    }
+    let mut families = Vec::new();
     for path in paths {
-        for family in families_from(path, &known)? {
-            let manifest =
-                sdf::Layer::from_bytes(format!("{}.manifest.usda", family.name), family.manifest.into_bytes())
-                    .map_err(|e| schema_error(path, e))?;
-            let schematics = sdf::Layer::open(family.schematics.to_string_lossy())
-                .map_err(|e| schema_error(&family.schematics, e))?;
-            builder = builder.family(FamilySource {
-                name: &family.name,
-                manifest: &manifest,
-                schematics: &schematics,
-            });
-        }
+        families.extend(families_from(path, &known)?.into_iter().map(|f| (path, f)));
+    }
+    let replaced = |name: &str| families.iter().any(|(_, f)| f.name == name);
+    let mut builder = SchemaRegistryBuilder::empty();
+    let builtin = std::iter::once(openusd::usd::SCHEMAS).chain(openusd_schemas::ALL.iter().copied());
+    for family in builtin {
+        builder = if replaced(family.name()) {
+            let name = format!("{}.builtinMetadata", family.name());
+            builder.register(
+                &SchemaFamily::new(&name, &[])
+                    .metadata(family.declared_metadata())
+                    .kinds(family.declared_kinds()),
+            )
+        } else {
+            builder.register(family)
+        };
+    }
+    for (path, family) in families {
+        let manifest = sdf::Layer::from_bytes(format!("{}.manifest.usda", family.name), family.manifest.into_bytes())
+            .map_err(|e| schema_error(path, e))?;
+        let schematics =
+            sdf::Layer::open(family.schematics.to_string_lossy()).map_err(|e| schema_error(&family.schematics, e))?;
+        builder = builder.family(FamilySource {
+            name: &family.name,
+            manifest: &manifest,
+            schematics: &schematics,
+        });
     }
     builder
         .build()

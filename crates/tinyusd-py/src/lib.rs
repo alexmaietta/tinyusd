@@ -7,6 +7,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use tinyusd_core::{self as core, BaseType, TraverseFlags};
 
+mod schemas;
+
 create_exception!(_tinyusd, Error, PyException);
 create_exception!(_tinyusd, OpenError, Error);
 create_exception!(_tinyusd, InvalidPathError, Error);
@@ -2172,6 +2174,7 @@ fn features() -> Vec<&'static str> {
         (core::Feature::Media, "media"),
         (core::Feature::Semantics, "semantics"),
         (core::Feature::Write, "write"),
+        (core::Feature::Schemas, "schemas"),
     ]
     .into_iter()
     .filter(|(f, _)| core::has_feature(*f))
@@ -2210,7 +2213,15 @@ fn _tinyusd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<GeomSubset>()?;
     m.add_class::<Triangles>()?;
     m.add_class::<Normals>()?;
+    m.add_class::<schemas::SchemaLibrary>()?;
+    m.add_class::<schemas::SchemaClass>()?;
+    m.add_class::<schemas::SchemaProperty>()?;
+    m.add_class::<schemas::LibraryToken>()?;
+    m.add_class::<schemas::ShaderNode>()?;
+    m.add_class::<schemas::ShaderPort>()?;
     m.add_function(wrap_pyfunction!(features, m)?)?;
+    m.add_function(wrap_pyfunction!(schemas::read_schema_library, m)?)?;
+    m.add_function(wrap_pyfunction!(schemas::read_shader_defs, m)?)?;
     Ok(())
 }
 

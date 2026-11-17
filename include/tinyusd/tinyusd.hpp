@@ -64,6 +64,16 @@ enum class Feature : std::uint32_t {
     Media = TUSD_FEATURE_MEDIA,
     Semantics = TUSD_FEATURE_SEMANTICS,
     Write = TUSD_FEATURE_WRITE,
+    Schemas = TUSD_FEATURE_SCHEMAS,
+};
+
+enum class SchemaKind : int {
+    AbstractBase = TUSD_SCHEMA_KIND_ABSTRACT_BASE,
+    AbstractTyped = TUSD_SCHEMA_KIND_ABSTRACT_TYPED,
+    ConcreteTyped = TUSD_SCHEMA_KIND_CONCRETE_TYPED,
+    NonAppliedApi = TUSD_SCHEMA_KIND_NON_APPLIED_API,
+    SingleApplyApi = TUSD_SCHEMA_KIND_SINGLE_APPLY_API,
+    MultipleApplyApi = TUSD_SCHEMA_KIND_MULTIPLE_APPLY_API,
 };
 
 enum class LayerFormat : std::uint32_t {
@@ -2301,6 +2311,265 @@ public:
 private:
     const Stage* stage_;
 };
+
+namespace detail {
+struct SchemaLibraryDeleter {
+    void operator()(TusdSchemaLibrary* l) const noexcept { tusd_schema_library_free(l); }
+};
+struct ShaderDefsDeleter {
+    void operator()(TusdShaderDefs* d) const noexcept { tusd_shader_defs_free(d); }
+};
+
+inline std::vector<std::string> strings(const char* const* items, std::size_t count) {
+    std::vector<std::string> out;
+    out.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) out.emplace_back(items[i]);
+    return out;
+}
+
+inline std::optional<std::string> optional_string(const char* s) {
+    if (!s) return std::nullopt;
+    return std::string(s);
+}
+
+inline std::optional<Value> copy_value(const TusdValue* src) {
+    if (!src) return std::nullopt;
+    Value out;
+    check(tusd_value_copy(out.raw(), src));
+    return out;
+}
+
+inline std::vector<const char*> c_strings(const std::vector<std::string>& items) {
+    std::vector<const char*> out;
+    out.reserve(items.size());
+    for (const auto& s : items) out.push_back(s.c_str());
+    return out;
+}
+}
+
+class Dictionary {
+public:
+    Dictionary() = default;
+    Dictionary(std::shared_ptr<const void> owner, const TusdDictionary* dictionary)
+        : owner_(std::move(owner)), dictionary_(dictionary) {}
+
+    std::vector<std::string> keys(const std::string& path = "") const {
+        std::vector<std::string> out;
+        if (!dictionary_) return out;
+        std::unique_ptr<TusdStringList, detail::StringListDeleter> list(tusd_string_list_new());
+        detail::check(tusd_dictionary_keys(dictionary_, path.c_str(), list.get()));
+        const std::size_t n = tusd_string_list_len(list.get());
+        out.reserve(n);
+        for (std::size_t i = 0; i < n; ++i) out.emplace_back(tusd_string_list_get(list.get(), i));
+        return out;
+    }
+
+    std::optional<Value> get(const std::string& path) const {
+        if (!dictionary_) return std::nullopt;
+        Value out;
+        bool found = false;
+        detail::check(tusd_dictionary_get(dictionary_, path.c_str(), out.raw(), &found));
+        if (!found) return std::nullopt;
+        return out;
+    }
+
+    bool empty() const { return keys().empty(); }
+    bool contains(const std::string& path) const { return get(path).has_value(); }
+    bool is_dictionary(const std::string& path) const {
+        auto v = get(path);
+        return v && v->type_name() == "dictionary";
+    }
+
+private:
+    std::shared_ptr<const void> owner_;
+    const TusdDictionary* dictionary_ = nullptr;
+};
+
+struct SchemaProperty {
+    std::string name;
+    std::string declared_by;
+    bool relationship = false;
+    std::string type_name;
+    bool uniform = false;
+    std::optional<Value> fallback;
+    std::vector<std::string> allowed_tokens;
+    std::optional<std::string> display_group;
+    std::optional<std::string> display_name;
+    std::optional<std::string> documentation;
+    Dictionary custom_data;
+};
+
+struct SchemaClass {
+    std::string name;
+    std::string cpp_name;
+    SchemaKind kind = SchemaKind::AbstractBase;
+    std::vector<std::string> bases;
+    std::vector<std::string> can_only_apply_to;
+    std::vector<std::string> auto_apply_to;
+    std::optional<std::string> property_namespace_prefix;
+    std::vector<std::string> allowed_instance_names;
+    std::vector<std::string> api_schemas;
+    std::optional<std::string> documentation;
+    Dictionary custom_data;
+    std::vector<SchemaProperty> properties;
+
+    const SchemaProperty* find_property(std::string_view property) const {
+        for (const auto& p : properties) {
+            if (p.name == property) return &p;
+        }
+        return nullptr;
+    }
+};
+
+struct LibraryToken {
+    std::string name;
+    std::string value;
+    std::optional<std::string> documentation;
+};
+
+struct SchemaLibrary {
+    std::string name;
+    std::string prefix;
+    bool skip_code_generation = false;
+    Dictionary global_data;
+    std::vector<LibraryToken> tokens;
+    std::vector<SchemaClass> classes;
+    std::vector<std::string> layers;
+    std::string generated_schema;
+    std::string plug_info;
+    std::shared_ptr<TusdSchemaLibrary> handle;
+
+    const SchemaClass* find_class(std::string_view schema) const {
+        for (const auto& c : classes) {
+            if (c.name == schema) return &c;
+        }
+        return nullptr;
+    }
+
+    void write_plugin(const std::string& dir) const {
+        detail::check(tusd_schema_library_write_plugin(handle.get(), dir.c_str()));
+    }
+};
+
+inline SchemaLibrary read_schema_library(const std::string& schema_path,
+                                         const std::vector<std::string>& search_paths = {}) {
+    auto paths = detail::c_strings(search_paths);
+    TusdSchemaLibrary* raw = nullptr;
+    detail::check(tusd_schema_library_read(schema_path.c_str(), paths.data(), paths.size(), &raw));
+    std::shared_ptr<TusdSchemaLibrary> handle(raw, detail::SchemaLibraryDeleter{});
+    TusdSchemaLibraryView view{};
+    detail::check(tusd_schema_library_info(raw, &view));
+    SchemaLibrary out;
+    out.name = view.name;
+    out.prefix = view.prefix;
+    out.skip_code_generation = view.skip_code_generation;
+    out.global_data = Dictionary(handle, view.global_data);
+    out.layers = detail::strings(view.layers, view.layer_count);
+    out.generated_schema = view.generated_schema;
+    out.plug_info = view.plug_info;
+    for (std::size_t i = 0; i < view.token_count; ++i) {
+        TusdLibraryTokenView t{};
+        detail::check(tusd_schema_library_token(raw, i, &t));
+        out.tokens.push_back({t.name, t.value, detail::optional_string(t.documentation)});
+    }
+    for (std::size_t i = 0; i < view.class_count; ++i) {
+        TusdSchemaClassView c{};
+        detail::check(tusd_schema_library_class(raw, i, &c));
+        SchemaClass cls;
+        cls.name = c.name;
+        cls.cpp_name = c.cpp_name;
+        cls.kind = static_cast<SchemaKind>(c.kind);
+        cls.bases = detail::strings(c.bases, c.base_count);
+        cls.can_only_apply_to = detail::strings(c.can_only_apply_to, c.can_only_apply_to_count);
+        cls.auto_apply_to = detail::strings(c.auto_apply_to, c.auto_apply_to_count);
+        cls.property_namespace_prefix = detail::optional_string(c.property_namespace_prefix);
+        cls.allowed_instance_names = detail::strings(c.allowed_instance_names, c.allowed_instance_name_count);
+        cls.api_schemas = detail::strings(c.api_schemas, c.api_schema_count);
+        cls.documentation = detail::optional_string(c.documentation);
+        cls.custom_data = Dictionary(handle, c.custom_data);
+        for (std::size_t j = 0; j < c.property_count; ++j) {
+            TusdSchemaPropertyView p{};
+            detail::check(tusd_schema_library_property(raw, i, j, &p));
+            SchemaProperty prop;
+            prop.name = p.name;
+            prop.declared_by = p.declared_by;
+            prop.relationship = p.relationship;
+            prop.type_name = p.type_name;
+            prop.uniform = p.uniform;
+            prop.fallback = detail::copy_value(p.fallback);
+            prop.allowed_tokens = detail::strings(p.allowed_tokens, p.allowed_token_count);
+            prop.display_group = detail::optional_string(p.display_group);
+            prop.display_name = detail::optional_string(p.display_name);
+            prop.documentation = detail::optional_string(p.documentation);
+            prop.custom_data = Dictionary(handle, p.custom_data);
+            cls.properties.push_back(std::move(prop));
+        }
+        out.classes.push_back(std::move(cls));
+    }
+    out.handle = std::move(handle);
+    return out;
+}
+
+struct ShaderPort {
+    std::string name;
+    std::string type_name;
+    std::optional<Value> fallback;
+    std::vector<std::string> allowed_tokens;
+    bool interface_only = false;
+    std::optional<std::string> documentation;
+    Dictionary sdr_metadata;
+};
+
+struct ShaderNode {
+    std::string name;
+    std::string id;
+    std::optional<std::string> documentation;
+    Dictionary sdr_metadata;
+    std::vector<ShaderPort> inputs;
+    std::vector<ShaderPort> outputs;
+};
+
+inline std::vector<ShaderNode> read_shader_defs(const std::string& path,
+                                                const std::vector<std::string>& search_paths = {}) {
+    auto paths = detail::c_strings(search_paths);
+    TusdShaderDefs* raw = nullptr;
+    detail::check(tusd_shader_defs_read(path.c_str(), paths.data(), paths.size(), &raw));
+    std::shared_ptr<TusdShaderDefs> handle(raw, detail::ShaderDefsDeleter{});
+    auto port = [&](const TusdShaderPortView& p) {
+        ShaderPort out;
+        out.name = p.name;
+        out.type_name = p.type_name;
+        out.fallback = detail::copy_value(p.fallback);
+        out.allowed_tokens = detail::strings(p.allowed_tokens, p.allowed_token_count);
+        out.interface_only = p.interface_only;
+        out.documentation = detail::optional_string(p.documentation);
+        out.sdr_metadata = Dictionary(handle, p.sdr_metadata);
+        return out;
+    };
+    std::vector<ShaderNode> nodes;
+    const std::size_t count = tusd_shader_defs_node_count(raw);
+    for (std::size_t i = 0; i < count; ++i) {
+        TusdShaderNodeView n{};
+        detail::check(tusd_shader_defs_node(raw, i, &n));
+        ShaderNode node;
+        node.name = n.name;
+        node.id = n.id;
+        node.documentation = detail::optional_string(n.documentation);
+        node.sdr_metadata = Dictionary(handle, n.sdr_metadata);
+        for (std::size_t j = 0; j < n.input_count; ++j) {
+            TusdShaderPortView p{};
+            detail::check(tusd_shader_defs_input(raw, i, j, &p));
+            node.inputs.push_back(port(p));
+        }
+        for (std::size_t j = 0; j < n.output_count; ++j) {
+            TusdShaderPortView p{};
+            detail::check(tusd_shader_defs_output(raw, i, j, &p));
+            node.outputs.push_back(port(p));
+        }
+        nodes.push_back(std::move(node));
+    }
+    return nodes;
+}
 
 }
 

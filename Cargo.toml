@@ -2,6 +2,7 @@
 resolver = "3"
 members = ["crates/tinyusd-core", "crates/tinyusd-capi", "crates/tinyusd-py"]
 default-members = ["crates/tinyusd-core", "crates/tinyusd-capi"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.3.0"
@@ -13,7 +14,13 @@ license = "BSD-3-Clause"
 tinyusd-core = { path = "crates/tinyusd-core", default-features = false }
 openusd = { git = "https://github.com/mxpv/openusd", rev = "78622a8b", features = ["mmap"] }
 openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "78622a8b", default-features = false }
+openusd-build = { git = "https://github.com/mxpv/openusd", rev = "78622a8b" }
 thiserror = "2"
+
+# openusd and openusd-build are vendored with the small changes the README lists under "Vendored openusd".
+[patch."https://github.com/mxpv/openusd"]
+openusd = { path = "vendor/openusd" }
+openusd-build = { path = "vendor/openusd-build" }
 
 [profile.release]
 opt-level = "s"

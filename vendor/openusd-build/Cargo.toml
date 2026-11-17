@@ -1,0 +1,22 @@
+# Vendored from https://github.com/mxpv/openusd at rev 78622a8b, crates/openusd-build.
+# The manifest drops workspace inheritance and the test fixtures. The source differs from upstream only by
+# the public schema-reading surface tinyusd's `schemas` feature needs, listed in tinyusd's README.
+[package]
+name = "openusd-build"
+description = "Generates Rust schema views from OpenUSD schema.usda files, for use as a build dependency"
+version = "0.8.0"
+edition = "2024"
+rust-version = "1.96"
+repository = "https://github.com/mxpv/openusd"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+openusd = { git = "https://github.com/mxpv/openusd", rev = "78622a8b" }
+thiserror = "2"
+serde_json = "1"
+prettyplease = "0.3"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "3", features = ["full", "parsing", "printing"] }
+textwrap = { version = "0.16", default-features = false, features = ["smawk", "unicode-width"] }

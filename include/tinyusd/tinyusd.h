@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TUSD_ABI_VERSION 9
+#define TUSD_ABI_VERSION 10
 
 typedef enum TusdStatus {
   TUSD_STATUS_OK = 0,
@@ -141,6 +141,15 @@ typedef enum TusdProjection {
   TUSD_PROJECTION_ORTHOGRAPHIC = 1,
 } TusdProjection;
 
+typedef enum TusdSchemaKind {
+  TUSD_SCHEMA_KIND_ABSTRACT_BASE = 0,
+  TUSD_SCHEMA_KIND_ABSTRACT_TYPED = 1,
+  TUSD_SCHEMA_KIND_CONCRETE_TYPED = 2,
+  TUSD_SCHEMA_KIND_NON_APPLIED_API = 3,
+  TUSD_SCHEMA_KIND_SINGLE_APPLY_API = 4,
+  TUSD_SCHEMA_KIND_MULTIPLE_APPLY_API = 5,
+} TusdSchemaKind;
+
 typedef enum TusdFeature {
   TUSD_FEATURE_GEOM = (1 << 0),
   TUSD_FEATURE_SHADE = (1 << 1),
@@ -151,6 +160,7 @@ typedef enum TusdFeature {
   TUSD_FEATURE_MEDIA = (1 << 6),
   TUSD_FEATURE_SEMANTICS = (1 << 7),
   TUSD_FEATURE_WRITE = (1 << 8),
+  TUSD_FEATURE_SCHEMAS = (1 << 9),
 } TusdFeature;
 
 typedef enum TusdTraverseFlags {
@@ -189,6 +199,8 @@ typedef enum TusdBoundSpace {
 
 typedef struct TusdBlendShapes TusdBlendShapes;
 
+typedef struct TusdDictionary TusdDictionary;
+
 typedef struct TusdInstances TusdInstances;
 
 typedef struct TusdOutput TusdOutput;
@@ -196,6 +208,10 @@ typedef struct TusdOutput TusdOutput;
 typedef struct TusdPhysics TusdPhysics;
 
 typedef struct TusdPrimList TusdPrimList;
+
+typedef struct TusdSchemaLibrary TusdSchemaLibrary;
+
+typedef struct TusdShaderDefs TusdShaderDefs;
 
 typedef struct TusdSkelBindings TusdSkelBindings;
 
@@ -515,6 +531,80 @@ typedef struct TusdLightInfo {
   float focus;
 } TusdLightInfo;
 
+typedef struct TusdSchemaLibraryView {
+  const char *name;
+  const char *prefix;
+  bool skip_code_generation;
+  const struct TusdDictionary *global_data;
+  size_t class_count;
+  size_t token_count;
+  const char *const *layers;
+  size_t layer_count;
+  const char *generated_schema;
+  const char *plug_info;
+} TusdSchemaLibraryView;
+
+typedef struct TusdSchemaClassView {
+  const char *name;
+  const char *cpp_name;
+  enum TusdSchemaKind kind;
+  const char *const *bases;
+  size_t base_count;
+  const char *const *can_only_apply_to;
+  size_t can_only_apply_to_count;
+  const char *const *auto_apply_to;
+  size_t auto_apply_to_count;
+  const char *property_namespace_prefix;
+  const char *const *allowed_instance_names;
+  size_t allowed_instance_name_count;
+  const char *const *api_schemas;
+  size_t api_schema_count;
+  const char *documentation;
+  const struct TusdDictionary *custom_data;
+  size_t property_count;
+} TusdSchemaClassView;
+
+typedef struct TusdSchemaPropertyView {
+  const char *name;
+  const char *declared_by;
+  bool relationship;
+  const char *type_name;
+  bool uniform;
+  const struct TusdValue *fallback;
+  const char *const *allowed_tokens;
+  size_t allowed_token_count;
+  const char *display_group;
+  const char *display_name;
+  const char *documentation;
+  const struct TusdDictionary *custom_data;
+} TusdSchemaPropertyView;
+
+typedef struct TusdLibraryTokenView {
+  const char *name;
+  const char *value;
+  const char *documentation;
+} TusdLibraryTokenView;
+
+typedef struct TusdShaderNodeView {
+  const char *name;
+  const char *id;
+  const char *documentation;
+  const struct TusdDictionary *sdr_metadata;
+  size_t input_count;
+  size_t output_count;
+} TusdShaderNodeView;
+
+typedef struct TusdShaderPortView {
+  const char *name;
+  const char *type_name;
+  const struct TusdValue *fallback;
+  const char *const *allowed_tokens;
+  size_t allowed_token_count;
+  bool interface_only;
+  const char *documentation;
+  const struct TusdDictionary *sdr_metadata;
+} TusdShaderPortView;
+
 #define TUSD_NO_PRIM UINT32_MAX
 
 #ifdef __cplusplus
@@ -715,6 +805,8 @@ enum TusdStatus tusd_prim_bound_material(struct TusdStage *stage,
 struct TusdValue *tusd_value_new(void);
 
 void tusd_value_free(struct TusdValue *value);
+
+enum TusdStatus tusd_value_copy(struct TusdValue *dst, const struct TusdValue *src);
 
 enum TusdValueType tusd_value_type(const struct TusdValue *value);
 
@@ -953,6 +1045,69 @@ enum TusdStatus tusd_attribute_metadata_keys(struct TusdStage *stage,
 enum TusdStatus tusd_stage_metadata_keys(struct TusdStage *stage,
                                          const char *key,
                                          struct TusdStringList *out);
+
+enum TusdStatus tusd_schema_library_read(const char *schema_path,
+                                         const char *const *search_paths,
+                                         size_t search_path_count,
+                                         struct TusdSchemaLibrary **out_library);
+
+void tusd_schema_library_free(struct TusdSchemaLibrary *library);
+
+enum TusdStatus tusd_schema_library_info(const struct TusdSchemaLibrary *library,
+                                         struct TusdSchemaLibraryView *out);
+
+enum TusdStatus tusd_schema_library_class(const struct TusdSchemaLibrary *library,
+                                          size_t index,
+                                          struct TusdSchemaClassView *out);
+
+enum TusdStatus tusd_schema_library_find_class(const struct TusdSchemaLibrary *library,
+                                               const char *name,
+                                               bool *out_found,
+                                               size_t *out_index);
+
+enum TusdStatus tusd_schema_library_property(const struct TusdSchemaLibrary *library,
+                                             size_t class_index,
+                                             size_t property_index,
+                                             struct TusdSchemaPropertyView *out);
+
+enum TusdStatus tusd_schema_library_token(const struct TusdSchemaLibrary *library,
+                                          size_t index,
+                                          struct TusdLibraryTokenView *out);
+
+enum TusdStatus tusd_schema_library_write_plugin(const struct TusdSchemaLibrary *library,
+                                                 const char *dir);
+
+enum TusdStatus tusd_dictionary_get(const struct TusdDictionary *dictionary,
+                                    const char *key,
+                                    struct TusdValue *out_value,
+                                    bool *out_found);
+
+enum TusdStatus tusd_dictionary_keys(const struct TusdDictionary *dictionary,
+                                     const char *key,
+                                     struct TusdStringList *out);
+
+enum TusdStatus tusd_shader_defs_read(const char *path,
+                                      const char *const *search_paths,
+                                      size_t search_path_count,
+                                      struct TusdShaderDefs **out_defs);
+
+void tusd_shader_defs_free(struct TusdShaderDefs *defs);
+
+size_t tusd_shader_defs_node_count(const struct TusdShaderDefs *defs);
+
+enum TusdStatus tusd_shader_defs_node(const struct TusdShaderDefs *defs,
+                                      size_t index,
+                                      struct TusdShaderNodeView *out);
+
+enum TusdStatus tusd_shader_defs_input(const struct TusdShaderDefs *defs,
+                                       size_t node_index,
+                                       size_t input_index,
+                                       struct TusdShaderPortView *out);
+
+enum TusdStatus tusd_shader_defs_output(const struct TusdShaderDefs *defs,
+                                        size_t node_index,
+                                        size_t output_index,
+                                        struct TusdShaderPortView *out);
 
 enum TusdStatus tusd_value_set_data(struct TusdValue *value,
                                     uint32_t type,

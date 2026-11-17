@@ -27,3 +27,4 @@ python-source = "crates/tinyusd-py/python"
 module-name = "tinyusd._tinyusd"
 manifest-path = "crates/tinyusd-py/Cargo.toml"
 features = ["pyo3/extension-module"]
+include = [{ path = "vendor/**/*", format = "sdist" }]
