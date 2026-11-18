@@ -170,13 +170,20 @@ pub fn open(builder: &Builder, schema: &Path) -> Result<Source, Error> {
         schema: schema.to_path_buf(),
     })?;
 
+    let absorbed = absorbed_libraries(&global);
     let mut declarations = Vec::new();
     for (identifier, _) in &globals {
         let Some(layer) = stage.layer(identifier) else {
             continue;
         };
         let owner = owners.get(identifier).unwrap_or(root_owner);
-        declarations.extend(read_classes(&layer, identifier, owner, **identifier == root));
+        let generated = **identifier == root || absorbed.iter().any(|name| name == owner.library);
+        declarations.extend(read_classes(&layer, identifier, owner, generated));
+    }
+    if !absorbed.is_empty()
+        && let Some(layer) = stage.layer(&root)
+    {
+        apply_overlays(&layer, &root, &mut declarations);
     }
 
     Ok(Source {
@@ -188,6 +195,67 @@ pub fn open(builder: &Builder, schema: &Path) -> Result<Source, Error> {
         tokens,
         global,
     })
+}
+
+/// The libraries the root layer's `/GLOBAL` absorbs through `absorbLibraries`:
+/// their classes, read from the sublayers that declare them, generate as part
+/// of this library, so a library can vendor another's files unchanged and
+/// annotate them with `over` prims in its root layer.
+fn absorbed_libraries(global: &vt::Dictionary) -> Vec<String> {
+    let Some(value) = global.get("absorbLibraries") else {
+        return Vec::new();
+    };
+    Vec::<String>::try_from(value.clone())
+        .or_else(|_| {
+            Vec::<tf::Token>::try_from(value.clone())
+                .map(|tokens| tokens.iter().map(|token| token.as_str().to_owned()).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// Merges the root layer's `over` prims into the absorbed classes they name:
+/// the over's `customData` is stronger than the class's, and so is each of its
+/// properties' over the property the class declares under the same name.
+fn apply_overlays(layer: &sdf::Layer, root: &str, declarations: &mut [Declaration]) {
+    let Some(pseudo) = layer.pseudo_root() else {
+        return;
+    };
+    for name in pseudo.prim_children().unwrap_or_default() {
+        let Ok(path) = sdf::Path::abs_root().append_path(name.as_str()) else {
+            continue;
+        };
+        let Some(prim) = layer.prim(&path).ok().flatten() else {
+            continue;
+        };
+        if prim.specifier() != Some(sdf::Specifier::Over) {
+            continue;
+        }
+        let Some(declaration) = declarations
+            .iter_mut()
+            .find(|declaration| declaration.generated && declaration.name == name)
+        else {
+            continue;
+        };
+        merge(
+            &mut declaration.custom_data,
+            CustomData::read(prim.get::<vt::Value>(sdf::FieldKey::CustomData)),
+        );
+        for property in read_properties(layer, &prim, &path, root) {
+            if let Some(target) = declaration
+                .properties
+                .iter_mut()
+                .find(|target| target.name == property.name)
+            {
+                merge(&mut target.custom_data, property.custom_data);
+            }
+        }
+    }
+}
+
+fn merge(declared: &mut CustomData, overlay: CustomData) {
+    let mut stronger = overlay.0;
+    stronger.over(std::mem::take(&mut declared.0));
+    declared.0 = stronger;
 }
 
 /// A token a schema asks for outright, beyond the ones its properties imply:
