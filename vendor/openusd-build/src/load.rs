@@ -141,6 +141,9 @@ pub fn open(builder: &Builder, schema: &Path) -> Result<Source, Error> {
     // The root layer first, so what this run generates leads the list.
     let mut globals = Vec::new();
     for identifier in iter::once(&root).chain(identifiers.iter().filter(|id| **id != root)) {
+        if globals.iter().any(|(seen, _)| *seen == identifier) {
+            continue;
+        }
         let Some(layer) = stage.layer(identifier) else {
             continue;
         };
