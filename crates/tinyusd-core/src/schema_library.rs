@@ -429,8 +429,9 @@ fn generated_schema(
     search_paths: &[PathBuf],
 ) -> std::result::Result<String, String> {
     let mut data = output.with_family(|f| f.to_data()).map_err(|e| e.to_string())?;
+    unpublish(&mut data, output.library())?;
     let user_doc = user_doc_stage(schema, search_paths)?;
-    for class in &output.library().classes {
+    for class in output.library().classes.iter().filter(|c| published(output.library(), c)) {
         let briefs = Briefs {
             user_doc: user_doc.as_ref(),
             class,
@@ -534,10 +535,48 @@ fn type_entry(library: &model::Library, class: &model::Class) -> Json {
     Json::Object(entry)
 }
 
+fn plugin_omits(library: &model::Library) -> Vec<String> {
+    let Some(value) = library.global.get("pluginOmits") else {
+        return Vec::new();
+    };
+    Vec::<String>::try_from(value.clone())
+        .or_else(|_| {
+            Vec::<tf::Token>::try_from(value.clone())
+                .map(|tokens| tokens.iter().map(|token| token.as_str().to_owned()).collect())
+        })
+        .unwrap_or_default()
+}
+
+fn published(library: &model::Library, class: &model::Class) -> bool {
+    class.library == library.name && !plugin_omits(library).iter().any(|name| name == class.identifier.as_str())
+}
+
+fn unpublish(data: &mut sdf::Data, library: &model::Library) -> std::result::Result<(), String> {
+    let root = sdf::Path::abs_root();
+    let mut dropped = Vec::new();
+    for class in library.classes.iter().filter(|c| !published(library, c)) {
+        let path = root.append_path(class.identifier.as_str()).map_err(|e| e.to_string())?;
+        let specs: Vec<sdf::Path> = data.iter().map(|(p, _)| p.clone()).filter(|p| p.has_prefix(&path)).collect();
+        for spec in specs {
+            data.erase_spec(&spec);
+        }
+        dropped.push(class.identifier.clone());
+    }
+    let key = sdf::ChildrenKey::PrimChildren.as_str();
+    if let Ok(children) = data.field(&root, key).map(|v| v.into_owned())
+        && let Ok(names) = Vec::<tf::Token>::try_from(children)
+    {
+        let kept: Vec<tf::Token> = names.into_iter().filter(|n| !dropped.contains(n)).collect();
+        data.set_field(&root, key, vt::Value::from(kept));
+    }
+    Ok(())
+}
+
 fn plug_info(library: &model::Library) -> String {
     let types: Map<String, Json> = library
         .classes
         .iter()
+        .filter(|c| published(library, c))
         .map(|c| (c.upstream_name.clone(), type_entry(library, c)))
         .collect();
     let mut info = Map::new();
