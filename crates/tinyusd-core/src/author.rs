@@ -1648,15 +1648,18 @@ const PRIM_FIELDS: [(&str, &str); 7] = [
     ("kind", "token"),
 ];
 
-const PROPERTY_FIELDS: [(&str, &str); 8] = [
+const PROPERTY_FIELDS: [(&str, &str); 11] = [
+    ("bindMaterialAs", "token"),
     ("colorSpace", "token"),
     ("comment", "string"),
+    ("connectability", "token"),
     ("displayGroup", "string"),
     ("displayName", "string"),
     ("documentation", "string"),
     ("elementSize", "int"),
     ("hidden", "bool"),
     ("interpolation", "token"),
+    ("renderType", "token"),
 ];
 
 struct MetadataField<'a> {
