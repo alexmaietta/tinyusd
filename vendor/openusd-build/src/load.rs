@@ -186,7 +186,7 @@ pub fn open(builder: &Builder, schema: &Path) -> Result<Source, Error> {
     if !absorbed.is_empty()
         && let Some(layer) = stage.layer(&root)
     {
-        apply_overlays(&layer, &root, &mut declarations);
+        apply_overlays(&layer, &root, &mut declarations)?;
     }
 
     Ok(Source {
@@ -219,9 +219,22 @@ fn absorbed_libraries(global: &vt::Dictionary) -> Vec<String> {
 /// Merges the root layer's `over` prims into the absorbed classes they name:
 /// the over's `customData` is stronger than the class's, and so is each of its
 /// properties' over the property the class declares under the same name.
-fn apply_overlays(layer: &sdf::Layer, root: &str, declarations: &mut [Declaration]) {
+const OVERLAY_PRIM_FIELDS: &[&str] = &["specifier", "customData", "propertyChildren"];
+const OVERLAY_PROPERTY_FIELDS: &[&str] = &["customData", "typeName", "variability", "custom"];
+
+fn overlay_fields(fields: Vec<String>, allowed: &[&str], origin: impl Fn() -> String) -> Result<(), Error> {
+    match fields.into_iter().find(|field| !allowed.contains(&field.as_str())) {
+        Some(field) => Err(Error::Overlay {
+            origin: origin(),
+            what: format!("authors {field}"),
+        }),
+        None => Ok(()),
+    }
+}
+
+fn apply_overlays(layer: &sdf::Layer, root: &str, declarations: &mut [Declaration]) -> Result<(), Error> {
     let Some(pseudo) = layer.pseudo_root() else {
-        return;
+        return Ok(());
     };
     for name in pseudo.prim_children().unwrap_or_default() {
         let Ok(path) = sdf::Path::abs_root().append_path(name.as_str()) else {
@@ -239,6 +252,27 @@ fn apply_overlays(layer: &sdf::Layer, root: &str, declarations: &mut [Declaratio
         else {
             continue;
         };
+        overlay_fields(prim.fields(), OVERLAY_PRIM_FIELDS, || format!("{root}:{path}"))?;
+        for property in prim.property_children().unwrap_or_default() {
+            let at = path.append_property(property.as_str()).map_err(|e| Error::Overlay {
+                origin: format!("{root}:{path}"),
+                what: e.to_string(),
+            })?;
+            if !declaration.properties.iter().any(|declared| declared.name == property) {
+                return Err(Error::Overlay {
+                    origin: format!("{root}:{at}"),
+                    what: "declares a property the class doesn't".to_owned(),
+                });
+            }
+            let fields = layer
+                .attribute(&at)
+                .ok()
+                .flatten()
+                .map(|attribute| attribute.fields())
+                .or_else(|| layer.relationship(&at).ok().flatten().map(|relationship| relationship.fields()))
+                .unwrap_or_default();
+            overlay_fields(fields, OVERLAY_PROPERTY_FIELDS, || format!("{root}:{at}"))?;
+        }
         merge(
             &mut declaration.custom_data,
             CustomData::read(prim.get::<vt::Value>(sdf::FieldKey::CustomData)),
@@ -253,6 +287,7 @@ fn apply_overlays(layer: &sdf::Layer, root: &str, declarations: &mut [Declaratio
             }
         }
     }
+    Ok(())
 }
 
 fn merge(declared: &mut CustomData, overlay: CustomData) {

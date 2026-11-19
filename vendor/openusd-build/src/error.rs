@@ -155,6 +155,16 @@ pub enum Error {
         schema: PathBuf,
     },
 
+    /// A root-layer `over` on an absorbed class authors more than `customData`,
+    /// which would change the vendored class rather than annotate it.
+    #[error("{origin}: an overlay may only add customData, but this {what}")]
+    Overlay {
+        /// Where the offending opinion lives, layer and path.
+        origin: String,
+        /// What it authors.
+        what: String,
+    },
+
     /// A schema declares something the generator cannot honour.
     #[error("{origin}: {violation}")]
     Definition {
