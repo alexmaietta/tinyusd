@@ -487,10 +487,13 @@ impl Stage {
 
     fn attribute_metadata_value(&self, prim: Prim, name: &str, key: &str) -> Result<Option<vt::Value>> {
         let (field, path) = split_key(key);
-        let value = self
-            .attribute(prim, name)?
-            .metadata::<vt::Value>(field)
-            .map_err(usd_err)?;
+        let attribute = self.attribute(prim, name)?;
+        let value = if attribute.is_defined().map_err(usd_err)? {
+            attribute.metadata::<vt::Value>(field)
+        } else {
+            self.usd_prim(prim)?.relationship(name).metadata::<vt::Value>(field)
+        }
+        .map_err(usd_err)?;
         Ok(at_path(value, path))
     }
 
