@@ -286,7 +286,7 @@ impl SchemaLibrary {
 }
 
 fn first_sentence(doc: &str) -> String {
-    let end = [". ", ".\n"]
+    let end = [". ", ".\n", ".\r"]
         .iter()
         .filter_map(|s| doc.find(s))
         .min()
@@ -431,7 +431,12 @@ fn generated_schema(
     let mut data = output.with_family(|f| f.to_data()).map_err(|e| e.to_string())?;
     unpublish(&mut data, output.library())?;
     let user_doc = user_doc_stage(schema, search_paths)?;
-    for class in output.library().classes.iter().filter(|c| published(output.library(), c)) {
+    for class in output
+        .library()
+        .classes
+        .iter()
+        .filter(|c| published(output.library(), c))
+    {
         let briefs = Briefs {
             user_doc: user_doc.as_ref(),
             class,
@@ -548,7 +553,10 @@ fn plugin_omits(library: &model::Library) -> Vec<String> {
 }
 
 fn published(library: &model::Library, class: &model::Class) -> bool {
-    class.library == library.name && !plugin_omits(library).iter().any(|name| name == class.identifier.as_str())
+    class.library == library.name
+        && !plugin_omits(library)
+            .iter()
+            .any(|name| name == class.identifier.as_str())
 }
 
 fn unpublish(data: &mut sdf::Data, library: &model::Library) -> std::result::Result<(), String> {
@@ -556,7 +564,11 @@ fn unpublish(data: &mut sdf::Data, library: &model::Library) -> std::result::Res
     let mut dropped = Vec::new();
     for class in library.classes.iter().filter(|c| !published(library, c)) {
         let path = root.append_path(class.identifier.as_str()).map_err(|e| e.to_string())?;
-        let specs: Vec<sdf::Path> = data.iter().map(|(p, _)| p.clone()).filter(|p| p.has_prefix(&path)).collect();
+        let specs: Vec<sdf::Path> = data
+            .iter()
+            .map(|(p, _)| p.clone())
+            .filter(|p| p.has_prefix(&path))
+            .collect();
         for spec in specs {
             data.erase_spec(&spec);
         }
@@ -652,4 +664,17 @@ pub fn read_shader_defs(path: impl AsRef<Path>, search_paths: &[PathBuf]) -> Res
             outputs: node.outputs.iter().map(port).collect(),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_sentence;
+
+    #[test]
+    fn first_sentence_ends_at_any_line_ending() {
+        assert_eq!(first_sentence("One. Two."), "One.");
+        assert_eq!(first_sentence("One.\nTwo."), "One.");
+        assert_eq!(first_sentence("One.\r\n\r\nTwo."), "One.");
+        assert_eq!(first_sentence("No stop"), "No stop.");
+    }
 }

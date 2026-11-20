@@ -325,7 +325,6 @@ dependencies = [
 [[package]]
 name = "openusd"
 version = "0.8.0"
-source = "git+https://github.com/mxpv/openusd?rev=78622a8b#78622a8badf427b5d1e853eb17b5963bf8e765ae"
 dependencies = [
  "bitflags",
  "bytemuck",
@@ -347,7 +346,6 @@ dependencies = [
 [[package]]
 name = "openusd-build"
 version = "0.8.0"
-source = "git+https://github.com/mxpv/openusd?rev=78622a8b#78622a8badf427b5d1e853eb17b5963bf8e765ae"
 dependencies = [
  "openusd",
  "prettyplease",
@@ -590,10 +588,11 @@ dependencies = [
 
 [[package]]
 name = "tinyusd-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "openusd",
+ "openusd-build",
  "openusd-schemas",
  "serde_json",
  "thiserror",

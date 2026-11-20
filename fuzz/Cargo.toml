@@ -35,6 +35,10 @@ bench = false
 [workspace]
 members = ["."]
 
+[patch."https://github.com/mxpv/openusd"]
+openusd = { path = "../vendor/openusd" }
+openusd-build = { path = "../vendor/openusd-build" }
+
 [profile.release]
 debug = 1
 
