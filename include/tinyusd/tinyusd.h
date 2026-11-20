@@ -1051,6 +1051,9 @@ enum TusdStatus tusd_schema_library_read(const char *schema_path,
                                          size_t search_path_count,
                                          struct TusdSchemaLibrary **out_library);
 
+enum TusdStatus tusd_schema_library_read_plugin(const char *plugin_path,
+                                                struct TusdSchemaLibrary **out_library);
+
 void tusd_schema_library_free(struct TusdSchemaLibrary *library);
 
 enum TusdStatus tusd_schema_library_info(const struct TusdSchemaLibrary *library,

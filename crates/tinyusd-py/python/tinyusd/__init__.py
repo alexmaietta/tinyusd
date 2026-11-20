@@ -35,6 +35,7 @@ from ._tinyusd import (
     __version__,
     features,
     read_schema_library,
+    read_schema_plugin,
     read_shader_defs,
 )
 
@@ -75,5 +76,6 @@ __all__ = [
     "__version__",
     "features",
     "read_schema_library",
+    "read_schema_plugin",
     "read_shader_defs",
 ]

@@ -132,6 +132,19 @@ int main(int argc, char** argv) {
     auto texture = std::find_if(nodes.begin(), nodes.end(), [](const auto& n) { return n.id == "UsdUVTexture"; });
     CHECK(texture->sdr_metadata.get("role")->string() == "texture");
 
+    const std::string written = out + "/plugin_usdGeom";
+    geom.write_plugin(written);
+    auto plugin = tinyusd::read_schema_plugin(written);
+    CHECK(plugin.name == "usdGeom");
+    CHECK(plugin.find_class("Mesh") && plugin.find_class("VisibilityAPI"));
+    const auto* plugin_sphere = plugin.find_class("Sphere");
+    CHECK(plugin_sphere && plugin_sphere->kind == tinyusd::SchemaKind::ConcreteTyped);
+    CHECK(plugin_sphere->bases.front() == "Gprim");
+    CHECK(plugin_sphere->find_property("radius")->fallback->as<double>() == 1.0);
+    CHECK(plugin_sphere->find_property("extent")->declared_by == "Sphere");
+    CHECK(plugin_sphere->find_property("visibility")->declared_by == "Imageable");
+    CHECK(plugin.find_class("BackPlateAPI")->property_namespace_prefix == "backPlate");
+
     tinyusd::OpenOptions builtin;
     auto before = tinyusd::Stage::open(std::string(argv[1]) + "/backplate.usda", builtin);
     CHECK(!before.prim("/Camera")->get<Vec2f>("backPlate:plate:scale:tweak"));

@@ -2221,6 +2221,7 @@ fn _tinyusd(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<schemas::ShaderPort>()?;
     m.add_function(wrap_pyfunction!(features, m)?)?;
     m.add_function(wrap_pyfunction!(schemas::read_schema_library, m)?)?;
+    m.add_function(wrap_pyfunction!(schemas::read_schema_plugin, m)?)?;
     m.add_function(wrap_pyfunction!(schemas::read_shader_defs, m)?)?;
     Ok(())
 }

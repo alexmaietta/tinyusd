@@ -119,3 +119,24 @@ def test_schema_paths_replace_builtin_families():
 def test_missing_library():
     with pytest.raises(tinyusd.SchemaError):
         tinyusd.read_schema_library(USD / "nope" / "schema.usda")
+
+
+def test_read_schema_plugin_matches_the_written_library(tmp_path):
+    geom = read("usdGeom")
+    geom.write_plugin(tmp_path / "usdGeom")
+    plugin = tinyusd.read_schema_plugin(tmp_path / "usdGeom")
+    assert plugin.name == "usdGeom"
+    for name in ("Sphere", "Mesh", "VisibilityAPI", "BackPlateAPI"):
+        ours, theirs = plugin.find_class(name), geom.find_class(name)
+        assert (ours.kind, ours.bases[:1], ours.can_only_apply_to) == (theirs.kind, theirs.bases[:1], theirs.can_only_apply_to)
+        assert sorted(p.name for p in ours.properties) == sorted(p.name for p in theirs.properties)
+    sphere = plugin.find_class("Sphere")
+    assert sphere.find_property("radius").fallback == 1.0
+    assert sphere.find_property("extent").declared_by == "Sphere"
+    assert sphere.find_property("visibility").declared_by == "Imageable"
+    assert plugin.find_class("BackPlateAPI").property_namespace_prefix == "backPlate"
+
+
+def test_read_schema_plugin_missing(tmp_path):
+    with pytest.raises(tinyusd.SchemaError):
+        tinyusd.read_schema_plugin(tmp_path / "nope")

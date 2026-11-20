@@ -2451,11 +2451,8 @@ struct SchemaLibrary {
     }
 };
 
-inline SchemaLibrary read_schema_library(const std::string& schema_path,
-                                         const std::vector<std::string>& search_paths = {}) {
-    auto paths = detail::c_strings(search_paths);
-    TusdSchemaLibrary* raw = nullptr;
-    detail::check(tusd_schema_library_read(schema_path.c_str(), paths.data(), paths.size(), &raw));
+namespace detail {
+inline SchemaLibrary schema_library(TusdSchemaLibrary* raw) {
     std::shared_ptr<TusdSchemaLibrary> handle(raw, detail::SchemaLibraryDeleter{});
     TusdSchemaLibraryView view{};
     detail::check(tusd_schema_library_info(raw, &view));
@@ -2508,6 +2505,21 @@ inline SchemaLibrary read_schema_library(const std::string& schema_path,
     }
     out.handle = std::move(handle);
     return out;
+}
+}
+
+inline SchemaLibrary read_schema_library(const std::string& schema_path,
+                                         const std::vector<std::string>& search_paths = {}) {
+    auto paths = detail::c_strings(search_paths);
+    TusdSchemaLibrary* raw = nullptr;
+    detail::check(tusd_schema_library_read(schema_path.c_str(), paths.data(), paths.size(), &raw));
+    return detail::schema_library(raw);
+}
+
+inline SchemaLibrary read_schema_plugin(const std::string& plugin_path) {
+    TusdSchemaLibrary* raw = nullptr;
+    detail::check(tusd_schema_library_read_plugin(plugin_path.c_str(), &raw));
+    return detail::schema_library(raw);
 }
 
 struct ShaderPort {

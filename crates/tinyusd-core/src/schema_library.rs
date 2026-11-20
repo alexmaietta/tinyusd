@@ -255,6 +255,188 @@ impl SchemaLibrary {
         })
     }
 
+    /// Reads a published schema plugin, the `plugInfo.json` and `generatedSchema.usda` pair that
+    /// OpenUSD loads at run time, into the same shape [`read`](Self::read) gives a `schema.usda`.
+    ///
+    /// Kinds, bases, apply targets, namespace prefixes and allowed instance names come from
+    /// `plugInfo.json` through the schema registry, and classes and properties come from the
+    /// class specs in `generatedSchema.usda`, in their order there. Multiple-apply properties
+    /// lose their `prefix:__INSTANCE_NAME__:` template the way `schema.usda` declares them.
+    /// Typed classes in a generated schema carry every inherited property, so a property is
+    /// declared by the nearest base in the plugin, or concrete built-in base, that defines it the
+    /// same way, and by the class itself otherwise.
+    pub fn read_plugin(plugin: impl AsRef<Path>) -> Result<Self> {
+        let plugin = plugin.as_ref();
+        let info_path = crate::schemas::plug_info_path(plugin);
+        let json = crate::schemas::read_plug_info(&info_path)?;
+        let dir = info_path.parent().unwrap_or(Path::new("."));
+        let entry = json["Plugins"]
+            .as_array()
+            .and_then(|plugins| {
+                plugins
+                    .iter()
+                    .find(|p| p["Info"]["Types"].as_object().is_some_and(|t| !t.is_empty()))
+            })
+            .ok_or_else(|| schema_error(&info_path, "no plugin declares schema types"))?;
+        let field = |key: &str| match entry[key].as_str() {
+            Some(v) if !(v.starts_with('@') && v.ends_with('@')) => v.to_owned(),
+            _ => ".".to_owned(),
+        };
+        let schematics = dir
+            .join(field("Root"))
+            .join(field("ResourcePath"))
+            .join("generatedSchema.usda");
+        let name = entry["Name"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            dir.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "custom".to_owned())
+        });
+        let mut cpp_names = BTreeMap::new();
+        for (cpp, info) in entry["Info"]["Types"].as_object().into_iter().flatten() {
+            let id = info["schemaIdentifier"]
+                .as_str()
+                .or_else(|| info["alias"]["UsdSchemaBase"].as_str())
+                .unwrap_or(cpp.as_str());
+            cpp_names.insert(id.to_owned(), cpp.clone());
+        }
+        let registry = crate::schemas::registry(&[plugin.to_path_buf()])?;
+        let layer = sdf::Layer::open(schematics.to_string_lossy()).map_err(|e| schema_error(&schematics, e))?;
+        let root = layer.pseudo_root().and_then(|r| r.prim_children()).unwrap_or_default();
+        let mut classes: Vec<SchemaClass> = Vec::new();
+        for identifier in root.iter().filter(|id| cpp_names.contains_key(id.as_str())) {
+            let info = registry
+                .schema_info(identifier)
+                .ok_or_else(|| schema_error(&info_path, format!("{identifier} isn't registered")))?;
+            let path = sdf::Path::abs_root()
+                .append_path(identifier.as_str())
+                .map_err(|e| schema_error(&schematics, e))?;
+            let spec = layer
+                .prim(&path)
+                .map_err(|e| schema_error(&schematics, e))?
+                .ok_or_else(|| schema_error(&schematics, format!("no class spec for {identifier}")))?;
+            let prefix = info
+                .property_namespace_prefix()
+                .map(|p| p.as_str().to_owned())
+                .or_else(|| {
+                    (info.kind() == usd::SchemaKind::MultipleApplyApi)
+                        .then(|| spec.property_children().unwrap_or_default())
+                        .into_iter()
+                        .flatten()
+                        .find_map(|name| {
+                            name.as_str()
+                                .split_once(":__INSTANCE_NAME__")
+                                .map(|(prefix, _)| prefix.to_owned())
+                        })
+                });
+            let template = prefix.as_ref().map(|p| format!("{p}:__INSTANCE_NAME__"));
+            let bases: Vec<String> = registry
+                .ancestors(identifier)
+                .into_iter()
+                .skip(1)
+                .filter(|b| b.as_str() != "SchemaBase")
+                .map(|b| b.as_str().to_owned())
+                .collect();
+            let mut properties = Vec::new();
+            for property_name in spec.property_children().unwrap_or_default() {
+                let property_path = path
+                    .append_property(property_name.clone())
+                    .map_err(|e| schema_error(&schematics, e))?;
+                let data = layer.data();
+                let get = |key: sdf::FieldKey| data.field(&property_path, key.as_str()).ok().map(|v| v.into_owned());
+                let type_name = get(sdf::FieldKey::TypeName)
+                    .and_then(|v| {
+                        v.as_str()
+                            .map(str::to_owned)
+                            .or_else(|| tf::Token::try_from(v).ok().map(|t| t.as_str().to_owned()))
+                    })
+                    .unwrap_or_default();
+                let fallback = get(sdf::FieldKey::Default).map(|v| {
+                    let mut out = Value::new();
+                    out.set_type_name(&type_name);
+                    out.assign(v);
+                    out
+                });
+                let text = |key: sdf::FieldKey| get(key).and_then(|v| v.as_str().map(str::to_owned));
+                let mut name = property_name.as_str().to_owned();
+                if let Some(template) = &template {
+                    if let Some(base) = name.strip_prefix(&format!("{template}:")) {
+                        name = base.to_owned();
+                    } else if name == *template {
+                        name = "__INSTANCE_NAME__".to_owned();
+                    }
+                }
+                properties.push(SchemaProperty {
+                    name,
+                    declared_by: identifier.as_str().to_owned(),
+                    relationship: data.spec_type(&property_path) == Some(sdf::SpecType::Relationship),
+                    type_name,
+                    uniform: get(sdf::FieldKey::Variability)
+                        .and_then(|v| sdf::Variability::try_from(v).ok())
+                        .is_some_and(|v| v == sdf::Variability::Uniform),
+                    fallback,
+                    allowed_tokens: strings(&model::allowed_tokens(get(sdf::FieldKey::AllowedTokens).as_ref())),
+                    display_group: text(sdf::FieldKey::DisplayGroup),
+                    display_name: text(sdf::FieldKey::DisplayName),
+                    documentation: text(sdf::FieldKey::Documentation),
+                    custom_data: Dictionary(
+                        get(sdf::FieldKey::CustomData)
+                            .and_then(|v| v.try_as_dictionary_ref().cloned())
+                            .unwrap_or_default(),
+                    ),
+                });
+            }
+            let api_schemas = spec
+                .api_schemas()
+                .map(|op| {
+                    let explicit = op.explicit_items();
+                    if explicit.is_empty() {
+                        strings(&[op.prepended_items(), op.appended_items()].concat())
+                    } else {
+                        strings(explicit)
+                    }
+                })
+                .unwrap_or_default();
+            let class_field = |key: sdf::FieldKey| spec.field(key.as_str()).ok().flatten();
+            classes.push(SchemaClass {
+                name: identifier.as_str().to_owned(),
+                cpp_name: cpp_names[identifier.as_str()].clone(),
+                kind: SchemaKind::from_usd(info.kind()),
+                bases,
+                can_only_apply_to: strings(info.can_only_apply_to(None)),
+                auto_apply_to: strings(info.auto_apply_to()),
+                property_namespace_prefix: prefix,
+                allowed_instance_names: strings(info.allowed_instance_names()),
+                api_schemas,
+                documentation: class_field(sdf::FieldKey::Documentation).and_then(|v| v.as_str().map(str::to_owned)),
+                custom_data: Dictionary(
+                    class_field(sdf::FieldKey::CustomData)
+                        .and_then(|v| v.try_as_dictionary_ref().cloned())
+                        .unwrap_or_default(),
+                ),
+                properties,
+            });
+        }
+        attribute_declarers(&mut classes, &registry);
+        let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| schema_error(path, e));
+        Ok(Self {
+            prefix: {
+                let mut chars = name.chars();
+                chars
+                    .next()
+                    .map(|c| c.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            },
+            name,
+            skip_code_generation: true,
+            global_data: Dictionary::default(),
+            tokens: Vec::new(),
+            classes,
+            layers: vec![crate::value::simplify_path(&schematics.to_string_lossy())],
+            generated_schema: read(&schematics)?,
+            plug_info: read(&info_path)?,
+        })
+    }
+
     pub fn find_class(&self, name: &str) -> Option<&SchemaClass> {
         self.classes.iter().find(|c| c.name == name)
     }
@@ -282,6 +464,82 @@ impl SchemaLibrary {
             std::fs::write(&path, text).map_err(|e| fail(&path, e))?;
         }
         Ok(())
+    }
+}
+
+fn same_value(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.base_type() == b.base_type()
+                && a.is_array() == b.is_array()
+                && a.len() == b.len()
+                && a.bytes() == b.bytes()
+                && a.strings() == b.strings()
+        }
+        _ => false,
+    }
+}
+
+fn same_property(a: &SchemaProperty, b: &SchemaProperty) -> bool {
+    a.type_name == b.type_name
+        && a.relationship == b.relationship
+        && a.uniform == b.uniform
+        && a.allowed_tokens == b.allowed_tokens
+        && same_value(a.fallback.as_ref(), b.fallback.as_ref())
+}
+
+fn attribute_declarers(classes: &mut [SchemaClass], registry: &usd::SchemaRegistry) {
+    let snapshot: Vec<SchemaClass> = classes.to_vec();
+    let find = |name: &str| snapshot.iter().position(|c| c.name == name);
+    let mut declared: Vec<Vec<Option<String>>> = snapshot.iter().map(|c| vec![None; c.properties.len()]).collect();
+    fn resolve(
+        index: usize,
+        property: usize,
+        snapshot: &[SchemaClass],
+        declared: &mut Vec<Vec<Option<String>>>,
+        registry: &usd::SchemaRegistry,
+        find: &dyn Fn(&str) -> Option<usize>,
+    ) -> String {
+        if let Some(done) = &declared[index][property] {
+            return done.clone();
+        }
+        let class = &snapshot[index];
+        let own = &class.properties[property];
+        let mut owner = class.name.clone();
+        if !class.kind.is_applied_api() {
+            for base in &class.bases {
+                if let Some(base_index) = find(base) {
+                    if let Some(at) = snapshot[base_index].properties.iter().position(|p| p.name == own.name) {
+                        if same_property(&snapshot[base_index].properties[at], own) {
+                            owner = resolve(base_index, at, snapshot, declared, registry, find);
+                        }
+                        break;
+                    }
+                } else if let Some(definition) = registry.concrete_prim_definition(&tf::Token::from(base.as_str()))
+                    && let Some(inherited) = definition.property(&tf::Token::from(own.name.as_str()))
+                {
+                    let fallback = inherited.fallback().map(|v| {
+                        let mut out = Value::new();
+                        out.set_type_name(&own.type_name);
+                        out.assign(v);
+                        out
+                    });
+                    if same_value(own.fallback.as_ref(), fallback.as_ref()) {
+                        owner = base.clone();
+                    }
+                    break;
+                }
+            }
+        }
+        declared[index][property] = Some(owner.clone());
+        owner
+    }
+    for index in 0..snapshot.len() {
+        for property in 0..snapshot[index].properties.len() {
+            let owner = resolve(index, property, &snapshot, &mut declared, registry, &find);
+            classes[index].properties[property].declared_by = owner;
+        }
     }
 }
 

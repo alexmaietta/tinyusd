@@ -38,7 +38,7 @@ struct Family {
     schematics: PathBuf,
 }
 
-fn plug_info_path(path: &Path) -> PathBuf {
+pub(crate) fn plug_info_path(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.join("plugInfo.json")
     } else {
@@ -46,7 +46,7 @@ fn plug_info_path(path: &Path) -> PathBuf {
     }
 }
 
-fn read_plug_info(path: &Path) -> Result<Json> {
+pub(crate) fn read_plug_info(path: &Path) -> Result<Json> {
     let text = std::fs::read_to_string(path).map_err(|e| schema_error(path, e))?;
     let json: String = text
         .lines()

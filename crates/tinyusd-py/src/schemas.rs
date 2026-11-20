@@ -201,7 +201,15 @@ pub(crate) fn read_schema_library(
     path: PathBuf,
     search_paths: Vec<PathBuf>,
 ) -> PyResult<SchemaLibrary> {
-    let inner = core::SchemaLibrary::read(path, &search_paths).map_err(py_err)?;
+    library(py, core::SchemaLibrary::read(path, &search_paths).map_err(py_err)?)
+}
+
+#[pyfunction]
+pub(crate) fn read_schema_plugin(py: Python<'_>, path: PathBuf) -> PyResult<SchemaLibrary> {
+    library(py, core::SchemaLibrary::read_plugin(path).map_err(py_err)?)
+}
+
+fn library(py: Python<'_>, inner: core::SchemaLibrary) -> PyResult<SchemaLibrary> {
     let classes = inner
         .classes
         .iter()

@@ -438,6 +438,7 @@ const auto* mesh = geom.find_class("Mesh");          // kind ConcreteTyped, base
 const auto* scheme = mesh->find_property("subdivisionScheme");
 // scheme->declared_by == "Mesh", scheme->fallback->string() == "catmullClark", scheme->allowed_tokens
 geom.write_plugin("out/usdGeom");                    // generatedSchema.usda and plugInfo.json
+auto newton = tinyusd::read_schema_plugin("site-packages/newton_usd_schemas");
 auto nodes = tinyusd::read_shader_defs("schemas/usdShaders/shaderDefs.usda");
 ```
 
@@ -453,9 +454,11 @@ print(mesh.kind, mesh.bases, [p.name for p in mesh.properties if p.declared_by =
 - **Shader definitions** list each node's prim name, `info:id`, documentation and `sdrMetadata`, and its inputs and outputs with type, fallback, allowed tokens, whether they connect only to an interface, and `sdrMetadata`.
 - **Codeless plugins.** `write_plugin(dir)` writes the `generatedSchema.usda` and `plugInfo.json` `usdGenSchema` writes for a library with `skipCodeGeneration`, including the brief user documentation it takes from `userDoc/schemaUserDoc.usda` beside the schema. The plugin is a `resource` plugin rooted at its own folder, ready for `schema_paths` or `PXR_PLUGINPATH_NAME`. Hand-written `plugInfo.json` entries such as `SdfMetadata` are not carried over.
 
+- **Published plugins.** `read_schema_plugin(dir)` (`tusd_schema_library_read_plugin` in C) reads a schema someone only published as a plugin, its `plugInfo.json` and `generatedSchema.usda`, into the same library shape, so third-party schemas such as `newton-usd-schemas` read like a `schema.usda`. Kinds, bases, apply targets and allowed instance names come from `plugInfo.json`, classes and properties come from `generatedSchema.usda` in its order, and a multiple-apply schema's namespace prefix comes from its `prefix:__INSTANCE_NAME__` properties when `plugInfo.json` leaves it out. A generated schema flattens inherited properties into each typed class, so a property counts as declared by the nearest base in the plugin, or concrete built-in base, that defines it the same way, and by the class itself otherwise. The library has no `/GLOBAL` data or `libraryTokens`.
+
 `customData`, `/GLOBAL` and `sdrMetadata` come back as dictionaries. In Python they are `dict`s. In C and C++ a `TusdDictionary` (`tinyusd::Dictionary`) lists the keys at a `:`-separated path and reads the value there into a `Value`, the way prim metadata reads `customData:key`. A nested dictionary reads as an unsupported value whose type name is `dictionary`.
 
-In C, `tusd_schema_library_read` and `tusd_shader_defs_read` return handles that own every string, list, value and dictionary in the views read from them (`TusdSchemaClassView`, `TusdSchemaPropertyView`, `TusdShaderNodeView` and so on), until `tusd_schema_library_free` or `tusd_shader_defs_free`. Optional strings are `NULL` when absent, and a property with no fallback has a `NULL` `fallback`.
+In C, `tusd_schema_library_read`, `tusd_schema_library_read_plugin` and `tusd_shader_defs_read` return handles that own every string, list, value and dictionary in the views read from them (`TusdSchemaClassView`, `TusdSchemaPropertyView`, `TusdShaderNodeView` and so on), until `tusd_schema_library_free` or `tusd_shader_defs_free`. Optional strings are `NULL` when absent, and a property with no fallback has a `NULL` `fallback`.
 
 The tests read every library of OpenUSD v26.11.1 (`usd`, `usdGeom`, `usdShade`, `usdVol`, `usdLux`, `usdRender`, `usdPhysics`) and its `shaderDefs.usda`, vendored in `tests/data/openusd-26.11.1`, and check that each written plugin matches USD's own `generatedSchema.usda` and the generated types of its `plugInfo.json`.
 

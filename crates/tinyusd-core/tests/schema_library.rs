@@ -299,3 +299,73 @@ fn schema_paths_replace_builtin_families() {
     let all = FAMILIES.iter().map(|f| usd_dir().join(f)).collect();
     assert_eq!(tweak(all), Some([1.0, 1.0]));
 }
+
+fn same_value(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.base_type() == b.base_type()
+                && a.is_array() == b.is_array()
+                && a.bytes() == b.bytes()
+                && a.strings() == b.strings()
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn read_plugin_matches_read_for_written_plugins() {
+    let out = std::env::temp_dir().join(format!("tinyusd_read_plugin_{}", std::process::id()));
+    for family in FAMILIES {
+        let source = read(family);
+        let dir = out.join(family);
+        source.write_plugin(&dir).unwrap();
+        let plugin = SchemaLibrary::read_plugin(&dir).unwrap();
+        assert_eq!(plugin.name, family);
+        let published: Vec<_> = source
+            .classes
+            .iter()
+            .filter(|c| plugin.find_class(&c.name).is_some())
+            .collect();
+        assert_eq!(published.len(), plugin.classes.len(), "{family}");
+        for expected in published {
+            let actual = plugin.find_class(&expected.name).unwrap();
+            let at = format!("{family}.{}", expected.name);
+            assert_eq!(actual.kind, expected.kind, "{at}");
+            assert_eq!(actual.cpp_name, expected.cpp_name, "{at}");
+            assert_eq!(actual.bases, expected.bases, "{at}");
+            assert_eq!(actual.can_only_apply_to, expected.can_only_apply_to, "{at}");
+            assert_eq!(actual.auto_apply_to, expected.auto_apply_to, "{at}");
+            assert_eq!(
+                actual.property_namespace_prefix, expected.property_namespace_prefix,
+                "{at}"
+            );
+            assert_eq!(actual.allowed_instance_names, expected.allowed_instance_names, "{at}");
+            assert_eq!(actual.api_schemas, expected.api_schemas, "{at}");
+            let mut want: Vec<_> = expected.properties.iter().map(|p| p.name.as_str()).collect();
+            let mut got: Vec<_> = actual.properties.iter().map(|p| p.name.as_str()).collect();
+            want.sort();
+            got.sort();
+            assert_eq!(got, want, "{at}");
+            for property in &expected.properties {
+                let found = actual.find_property(&property.name).unwrap();
+                let at = format!("{at}.{}", property.name);
+                assert_eq!(found.type_name, property.type_name, "{at}");
+                assert_eq!(found.relationship, property.relationship, "{at}");
+                assert_eq!(found.uniform, property.uniform, "{at}");
+                assert_eq!(found.allowed_tokens, property.allowed_tokens, "{at}");
+                assert!(same_value(found.fallback.as_ref(), property.fallback.as_ref()), "{at}");
+                if plugin.find_class(&property.declared_by).is_some() {
+                    assert_eq!(found.declared_by, property.declared_by, "{at}");
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(&out).ok();
+}
+
+#[test]
+fn read_plugin_reports_a_missing_plug_info() {
+    let missing = std::env::temp_dir().join("tinyusd_read_plugin_missing");
+    assert!(SchemaLibrary::read_plugin(&missing).is_err());
+}

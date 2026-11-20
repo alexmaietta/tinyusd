@@ -374,6 +374,21 @@ pub unsafe extern "C" fn tusd_schema_library_read(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn tusd_schema_library_read_plugin(
+    plugin_path: *const c_char,
+    out_library: *mut *mut TusdSchemaLibrary,
+) -> TusdStatus {
+    schemas_api!({
+        let out = unsafe { out_mut(out_library, "out_library") }?;
+        *out = ptr::null_mut();
+        let path = unsafe { str_arg(plugin_path, "plugin_path") }?;
+        let library = core::SchemaLibrary::read_plugin(path)?;
+        *out = Box::into_raw(Box::new(wrap_library(library)));
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tusd_schema_library_free(library: *mut TusdSchemaLibrary) {
     if !library.is_null() {
         drop(unsafe { Box::from_raw(library) });
