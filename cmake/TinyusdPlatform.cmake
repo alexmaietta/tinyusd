@@ -17,7 +17,7 @@ endfunction()
 
 function(tinyusd_static_system_libs out)
   if(WIN32)
-    set(libs kernel32 ntdll userenv ws2_32 dbghelp)
+    set(libs kernel32 ntdll userenv ws2_32 dbghelp synchronization)
   elseif(APPLE)
     set(libs iconv System c m)
   else()

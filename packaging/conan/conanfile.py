@@ -80,7 +80,7 @@ class TinyusdConan(ConanFile):
         self.cpp_info.libs = ["tinyusd.dll" if self.settings.os == "Windows" and self.options.shared else "tinyusd"]
         if not self.options.shared:
             if self.settings.os == "Windows":
-                self.cpp_info.system_libs = ["kernel32", "ntdll", "userenv", "ws2_32", "dbghelp"]
+                self.cpp_info.system_libs = ["kernel32", "ntdll", "userenv", "ws2_32", "dbghelp", "synchronization"]
             elif self.settings.os == "Macos":
                 self.cpp_info.system_libs = ["iconv", "m"]
             else:
