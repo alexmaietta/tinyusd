@@ -535,10 +535,9 @@ fn attribute_declarers(classes: &mut [SchemaClass], registry: &usd::SchemaRegist
         declared[index][property] = Some(owner.clone());
         owner
     }
-    for index in 0..snapshot.len() {
-        for property in 0..snapshot[index].properties.len() {
-            let owner = resolve(index, property, &snapshot, &mut declared, registry, &find);
-            classes[index].properties[property].declared_by = owner;
+    for (index, class) in classes.iter_mut().enumerate() {
+        for (property, entry) in class.properties.iter_mut().enumerate() {
+            entry.declared_by = resolve(index, property, &snapshot, &mut declared, registry, &find);
         }
     }
 }
